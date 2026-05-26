@@ -1,0 +1,19 @@
+Zespół: 2 
+
+Skład: 
+•	Bartosz Palicki, Paliciak, rola: Crypto Core Engineer
+•	Michał Muraszko, MuraszkoM, rola: Security Champion
+•	Jakub Halejcio, <login GitHub>, rola: Format & Storage Engineer
+•	Bartosz Kroczak, <login GitHub>, rola: Application Engineer
+•	Łukasz Krawiec, <login GitHub>, rola: Quality & Process Lead
+
+Język implementacji: Rust
+URL:  https://github.com/MuraszkoM/PZ
+Kanał komunikacji: Discord 
+
+Decyzje techniczne (uzasadnione w ADR): 
+ADR-001 Wybór języka: Rust 
+ADR-002 Format wewnętrzny body: 
+ADR-003 Algorytm AEAD: 
+
+Pierwszy demonstracyjny commit do main: 26.05.2026
