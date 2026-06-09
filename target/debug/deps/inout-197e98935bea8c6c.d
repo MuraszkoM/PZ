@@ -1,0 +1,11 @@
+/Users/bartoszpalicki/PZ/target/debug/deps/inout-197e98935bea8c6c.d: /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/lib.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/errors.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout_buf.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/reserved.rs
+
+/Users/bartoszpalicki/PZ/target/debug/deps/libinout-197e98935bea8c6c.rlib: /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/lib.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/errors.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout_buf.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/reserved.rs
+
+/Users/bartoszpalicki/PZ/target/debug/deps/libinout-197e98935bea8c6c.rmeta: /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/lib.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/errors.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout_buf.rs /Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/reserved.rs
+
+/Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/lib.rs:
+/Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/errors.rs:
+/Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout.rs:
+/Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout_buf.rs:
+/Users/bartoszpalicki/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/reserved.rs:

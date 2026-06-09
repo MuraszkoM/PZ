@@ -1,3 +1,4 @@
+mod crypto;
 fn main() {
     println!("vault project placeholder");
 }
