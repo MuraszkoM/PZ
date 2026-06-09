@@ -1,20 +1,16 @@
 # ADR-002: Wybór formatu body
 
 ## Status
-Proposed
-
+Accepted
 
 ## Kontekst
-Body vaulta musi przechowywać rekordy różnych typów i obsługiwać dane tekstowe oraz binarne.
-
+Body vaulta przechowuje rekordy użytkownika po deszyfrowaniu. Format musi obsługiwać tekst, liczby, mapy, listy i dane binarne. Ważne jest też deterministyczne kodowanie, bo format ma być możliwy do odtworzenia przez inną implementację
 
 ## Decyzja
-Planoany format body: CBOR.
-
+Wybieramy CBOR jako format body
 
 ## Uzasadnienie
-CBOR jest formatem binarnym, obsługuje bajty i lepiej pasuje do canonical encoding niż zwykły JSON.
-
+CBOR jest formatem binarnym, obsługuje dane bajtowe bez używania base64 i dobrze pasuje do canonical encoding. W Rust użyjemy biblioteki `ciborium`
 
 ## Konsekwencje
-Musimy dokładnie opisać canonical encoding w SPEC.md i pilnować zgodności parsera oraz serializera.
+Musimy dokładnie pilnować zasad canonical CBOR w `SPEC.md`. Parser body musi odrzucać niepoprawne lub nieznane struktury w wersji v1
