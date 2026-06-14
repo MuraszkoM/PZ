@@ -1,5 +1,105 @@
 {
   "version": 1,
-  "status": "placeholder",
-  "description": "tu będą docelowe wektory testowe po zaakceptowaniu w SPEC.md."
+  "description": "Deterministyczne wektory testowe dla formatu vault v1. Każda implementacja musi odtworzyć te wartości bit-w-bit.",
+  "context_string": "vault-v1",
+  "kdf": {
+    "algorithm": "Argon2id",
+    "password": "correct horse battery staple",
+    "salt_hex": "00000000000000000000000000000000",
+    "memory_kib": 65536,
+    "iterations": 3,
+    "parallelism": 1,
+    "output_len": 32,
+    "note": "master_key_hex zostanie uzupełniony po zaakceptowaniu SPEC.md przez prowadzącego"
+  },
+  "header": {
+    "magic": "VLT1",
+    "version": "0x0001",
+    "flags": "0x0000",
+    "kdf_id": 1,
+    "kdf_memory_kib": 65536,
+    "kdf_iterations": 3,
+    "kdf_parallelism": 1,
+    "kdf_salt_len": 16,
+    "kdf_salt_hex": "00000000000000000000000000000000",
+    "aead_id": 1,
+    "nonce_dek_hex": "000000000000000000000001",
+    "wrapped_dek_len": 48,
+    "canonical_header_len": 100,
+    "full_header_len": 132,
+    "note": "wrapped_dek_hex i header_mac_hex zostaną uzupełnione po implementacji Crypto Core"
+  },
+  "body": {
+    "schema_version": 1,
+    "records": [
+      {
+        "id_hex": "6ba7b8109dad11d180b400c04fd430c8",
+        "type": "login",
+        "title": "Przykładowy login",
+        "tags": ["test"],
+        "notes": "",
+        "created_at": 1700000000000000000,
+        "modified_at": 1700000001000000000,
+        "fields": {
+          "url": "https://example.com",
+          "username": "user@example.com",
+          "password": "correct horse battery staple"
+        }
+      }
+    ]
+  },
+  "file_structure": {
+    "offsets": {
+      "magic": "0-3",
+      "version": "4-5",
+      "flags": "6-7",
+      "kdf_id": "8",
+      "kdf_memory_kib": "9-12",
+      "kdf_iterations": "13-16",
+      "kdf_parallelism": "17",
+      "kdf_salt_len": "18",
+      "kdf_salt": "19-34",
+      "aead_id": "35",
+      "nonce_dek": "36-47",
+      "wrapped_dek_len": "48-51",
+      "wrapped_dek": "52-99",
+      "header_mac": "100-131",
+      "nonce_body": "132-143",
+      "ct_body": "144+"
+    },
+    "note": "Wszystkie liczby wielobajtowe w big-endian. expected_file_base64 zostanie uzupełniony po integracji Crypto Core z Format."
+  },
+  "adversarial_cases": [
+    {
+      "id": "A1",
+      "description": "Modyfikacja bajtu w ct_body",
+      "action": "Zmień bajt na offset 145 z dowolnej wartości na wartość XOR 0xFF",
+      "expected": "ERR_BAD_PASSWORD_OR_CORRUPTED"
+    },
+    {
+      "id": "A2",
+      "description": "Modyfikacja kdf_iterations (offset 13-16) z 3 na 1",
+      "action": "Zmień bajty 13-16 na [0x00, 0x00, 0x00, 0x01]",
+      "expected": "ERR_BAD_PASSWORD_OR_CORRUPTED"
+    },
+    {
+      "id": "A3",
+      "description": "Zmiana aead_id (offset 35) na 99",
+      "action": "Ustaw bajt 35 na 0x63",
+      "expected": "ERR (UnsupportedAeadId) lub ERR_BAD_PASSWORD_OR_CORRUPTED"
+    },
+    {
+      "id": "A7",
+      "description": "Truncation pliku — ucięcie po nagłówku",
+      "action": "Ogranicz plik do pierwszych 132 bajtów",
+      "expected": "ERR (FileTooShort lub ERR_BAD_PASSWORD_OR_CORRUPTED)"
+    },
+    {
+      "id": "A8",
+      "description": "Plik pusty lub z błędnym magic",
+      "action": "Pusty plik lub pierwsze 4 bajty != VLT1",
+      "expected": "ERR (FileTooShort lub InvalidMagic) — kontrolowany błąd, nie crash"
+    }
+  ],
+  "status": "draft — wymaga uzupełnienia po integracji Crypto Core (M4)"
 }
