@@ -8,7 +8,6 @@
 ///
 /// Atomowy zapis jest krytyczny dla bezpieczeństwa:
 /// jeśli program crashnie w trakcie zapisu, stara wersja pliku jest nienaruszona.
-
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -33,10 +32,9 @@ impl std::fmt::Display for StorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StorageError::Io(e) => write!(f, "Błąd I/O: {e}"),
-            StorageError::FileTooLarge(size) => write!(
-                f,
-                "Plik vault ({size} bajtów) przekracza limit 100 MiB"
-            ),
+            StorageError::FileTooLarge(size) => {
+                write!(f, "Plik vault ({size} bajtów) przekracza limit 100 MiB")
+            }
             StorageError::FileNotFound(path) => {
                 write!(f, "Plik vault nie istnieje: {}", path.display())
             }
@@ -151,10 +149,7 @@ pub fn write_vault_file_atomic(path: &Path, data: &[u8]) -> Result<(), StorageEr
 fn make_temp_path(path: &Path) -> PathBuf {
     let mut temp = path.to_path_buf();
     // Dodajemy ".tmp" do rozszerzenia
-    let mut file_name = path
-        .file_name()
-        .unwrap_or_default()
-        .to_os_string();
+    let mut file_name = path.file_name().unwrap_or_default().to_os_string();
     file_name.push(".tmp");
     temp.set_file_name(file_name);
     temp
@@ -275,7 +270,7 @@ mod tests {
         // Aby nie alokować 100 MB w teście, mockujemy przez ustawienie len w vec
         // To zadziała bo sprawdzamy data.len() as u64
         let fake_big: Vec<u8> = vec![0u8; 1]; // mały
-        // Testujemy bezpośrednio warunek przez dummy
+                                              // Testujemy bezpośrednio warunek przez dummy
         let result: Result<(), StorageError> = if 1u64 > MAX_VAULT_SIZE {
             Err(StorageError::FileTooLarge(1))
         } else {
