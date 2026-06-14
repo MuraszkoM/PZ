@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, clippy::enum_variant_names)]
 // Moduł kryptograficzny vaulta
 // Autor: P
 // Implementuje: Argon2id, HKDF, HMAC-SHA256, ChaCha20-Poly1305
