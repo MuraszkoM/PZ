@@ -1,0 +1,28 @@
+[package]
+name = "vault-fuzz"
+version = "0.0.1"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Nasz crate jako zależność — fuzz targets importują vault::format itd.
+[dependencies.vault]
+path = ".."
+
+# Fuzz targets muszą być zadeklarowane jako [[bin]]
+[[bin]]
+name = "header_parser"
+path = "fuzz_targets/header_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "body_parser"
+path = "fuzz_targets/body_parser.rs"
+test = false
+doc = false
