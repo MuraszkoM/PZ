@@ -179,7 +179,6 @@ pub fn check_file_readable(path: &Path) -> Result<Vec<u8>, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
 
     /// Tworzy katalog tymczasowy na czas testu.
@@ -260,7 +259,7 @@ mod tests {
     #[test]
     fn write_rejects_oversized_data() {
         let dir = temp_dir();
-        let path = dir.path().join("big.vault");
+        let _path = dir.path().join("big.vault");
 
         // Tworzymy dane większe niż 100 MiB (nie alokujemy naprawdę, tylko sprawdzamy logikę)
         // Trick: tworzymy vec z odpowiednią deklarowaną pojemnością
@@ -271,7 +270,7 @@ mod tests {
         // To zadziała bo sprawdzamy data.len() as u64
         let fake_big: Vec<u8> = vec![0u8; 1]; // mały
                                               // Testujemy bezpośrednio warunek przez dummy
-        let result: Result<(), StorageError> = if 1u64 > MAX_VAULT_SIZE {
+        let _result: Result<(), StorageError> = if 1u64 > MAX_VAULT_SIZE {
             Err(StorageError::FileTooLarge(1))
         } else {
             Ok(())
@@ -279,8 +278,8 @@ mod tests {
         // Rzeczywisty test: sprawdź że MAX_VAULT_SIZE = 100 MiB
         assert_eq!(MAX_VAULT_SIZE, 100 * 1024 * 1024);
         // I że funkcja zwróci błąd dla za dużych danych (logika jest w kodzie)
-        drop(big_len);
-        drop(fake_big);
+        let _ = big_len;
+        let _ = fake_big;
     }
 
     #[test]
