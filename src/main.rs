@@ -1,22 +1,13 @@
 // main.rs — punkt wejścia aplikacji vault
 //
-// Na tym etapie main.rs tylko deklaruje moduły i ma placeholder CLI.
-// Pełna implementacja CLI będzie w osobnym PR przez Application Engineera.
+// Moduly sa zadeklarowane tutaj. Caly kod aplikacji siedzi w bibliotece (lib.rs),
+// main tylko odpala CLI i oddaje jego kod wyjscia.
 
 // Deklaracje modułów — Rust wymaga żebyś jawnie powiedział które pliki są modułami
 pub mod format;
 pub mod storage;
 
 fn main() {
-    println!("vault — bezpieczny menedżer sekretów");
-    println!("Użyj: vault <komenda> [argumenty]");
-    println!("Dostępne komendy: (w budowie)");
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder_test_passes() {
-        assert_eq!(2 + 2, 4);
-    }
+    // caly kod jest w lib, tu tylko odpalamy CLI i oddajemy jego kod wyjscia
+    std::process::exit(vault::cli::run());
 }

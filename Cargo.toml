@@ -27,9 +27,9 @@ ciborium = "0.2"
 clap = { version = "4", features = ["derive"] }
 # UUID v4 dla ID rekordów
 uuid = { version = "1", features = ["v4"] }
+# Wczytywanie hasła bez echa (ADR-006)
+rpassword = "7"
 
 [dev-dependencies]
-# Testy jednostkowe nie wymagają dodatkowych zależności
-# ale hex przyda się do porównywania bajtów w testach
 hex = "0.4"
 tempfile = "3"
