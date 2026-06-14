@@ -743,10 +743,7 @@ fn parse_fields(value: CborValue, record_type: &str) -> Result<RecordFields, For
 // Te funkcje zamieniają CborValue na konkretne typy Rusta i zwracają czytelne błędy.
 
 /// Konwertuje CborValue na BTreeMap<String, CborValue> (alias dla mapy CBOR).
-fn cbor_map(
-    value: CborValue,
-    context: &str,
-) -> Result<BTreeMap<String, CborValue>, FormatError> {
+fn cbor_map(value: CborValue, context: &str) -> Result<BTreeMap<String, CborValue>, FormatError> {
     match value {
         CborValue::Map(pairs) => {
             let mut map = BTreeMap::new();
@@ -771,10 +768,7 @@ fn cbor_map(
 }
 
 /// Wyciąga pole tekstowe z mapy CBOR.
-fn cbor_get_text(
-    map: &BTreeMap<String, CborValue>,
-    field: &str,
-) -> Result<String, FormatError> {
+fn cbor_get_text(map: &BTreeMap<String, CborValue>, field: &str) -> Result<String, FormatError> {
     match map.get(field) {
         Some(CborValue::Text(s)) => Ok(s.clone()),
         Some(_) => Err(FormatError::InvalidFieldType(field.to_string())),
@@ -783,10 +777,7 @@ fn cbor_get_text(
 }
 
 /// Wyciąga pole uint (u64) z mapy CBOR.
-fn cbor_get_uint(
-    map: &BTreeMap<String, CborValue>,
-    field: &str,
-) -> Result<u64, FormatError> {
+fn cbor_get_uint(map: &BTreeMap<String, CborValue>, field: &str) -> Result<u64, FormatError> {
     match map.get(field) {
         Some(CborValue::Integer(i)) => {
             // ciborium::Integer obsługuje i128, my chcemy u64
@@ -799,10 +790,7 @@ fn cbor_get_uint(
 }
 
 /// Wyciąga pole bajtowe z mapy CBOR.
-fn cbor_get_bytes(
-    map: &BTreeMap<String, CborValue>,
-    field: &str,
-) -> Result<Vec<u8>, FormatError> {
+fn cbor_get_bytes(map: &BTreeMap<String, CborValue>, field: &str) -> Result<Vec<u8>, FormatError> {
     match map.get(field) {
         Some(CborValue::Bytes(b)) => Ok(b.clone()),
         Some(_) => Err(FormatError::InvalidFieldType(field.to_string())),
