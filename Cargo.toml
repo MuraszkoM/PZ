@@ -3,4 +3,33 @@ name = "vault"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "vault"
+path = "src/main.rs"
+
 [dependencies]
+# KDF - wyprowadzanie klucza z hasła
+argon2 = "0.5"
+# Szyfrowanie AEAD (ChaCha20-Poly1305)
+chacha20poly1305 = "0.10"
+# HMAC (integralność nagłówka)
+hmac = "0.12"
+sha2 = "0.10"
+# HKDF (wyprowadzanie kluczy pochodnych z master_key)
+hkdf = "0.12"
+# Zerowanie sekretów z pamięci po użyciu
+zeroize = { version = "1.7", features = ["derive"] }
+# Kryptograficznie bezpieczny generator liczb losowych
+rand = { version = "0.8", features = [] }
+# Serializacja CBOR (format body)
+ciborium = "0.2"
+# Parser argumentów CLI
+clap = { version = "4", features = ["derive"] }
+# UUID v4 dla ID rekordów
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# Testy jednostkowe nie wymagają dodatkowych zależności
+# ale hex przyda się do porównywania bajtów w testach
+hex = "0.4"
+tempfile = "3"
