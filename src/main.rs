@@ -1,11 +1,4 @@
 fn main() {
-    println!("vault project placeholder");
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder_test_passes() {
-        assert_eq!(2 + 2, 4);
-    }
+    // caly kod jest w lib, tu tylko odpalamy CLI i oddajemy jego kod wyjscia
+    std::process::exit(vault::cli::run());
 }

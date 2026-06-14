@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+rpassword = "7"
