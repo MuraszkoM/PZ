@@ -8,26 +8,26 @@ name = "vault"
 path = "src/main.rs"
 
 [dependencies]
-# KDF - wyprowadzanie klucza z hasla
+# KDF - wyprowadzanie klucza z hasła
 argon2 = "0.5"
 # Szyfrowanie AEAD (ChaCha20-Poly1305)
 chacha20poly1305 = "0.10"
-# HMAC (integralnosc naglowka)
+# HMAC (integralność nagłówka)
 hmac = "0.12"
 sha2 = "0.10"
 # HKDF (wyprowadzanie kluczy pochodnych z master_key)
 hkdf = "0.12"
-# Zerowanie sekretow z pamieci po uzyciu
+# Zerowanie sekretów z pamięci po użyciu
 zeroize = { version = "1.7", features = ["derive"] }
 # Kryptograficznie bezpieczny generator liczb losowych
 rand = { version = "0.8", features = [] }
 # Serializacja CBOR (format body)
 ciborium = "0.2"
-# Parser argumentow CLI
+# Parser argumentów CLI
 clap = { version = "4", features = ["derive"] }
-# UUID v4 dla ID rekordow
+# UUID v4 dla ID rekordów
 uuid = { version = "1", features = ["v4"] }
-# Wczytywanie hasla bez echa (ADR-006)
+# Wczytywanie hasła bez echa (ADR-006)
 rpassword = "7"
 
 [dev-dependencies]
