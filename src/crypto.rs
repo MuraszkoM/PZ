@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 // Moduł kryptograficzny vaulta
 // Autor: P
 // Implementuje: Argon2id, HKDF, HMAC-SHA256, ChaCha20-Poly1305
