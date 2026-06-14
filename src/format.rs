@@ -7,7 +7,6 @@
 /// - serializację rekordów do CBOR
 ///
 /// Dokumentacja formatu: docs/SPEC.md
-
 // Importy — w Rust musisz jawnie powiedzieć skąd bierzesz typy
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -216,7 +215,11 @@ impl VaultHeader {
         buf.extend_from_slice(&self.wrapped_dek);
 
         // Sanity check: canonical header musi mieć dokładnie 100 bajtów
-        debug_assert_eq!(buf.len(), CANONICAL_HEADER_LEN, "błąd w serialize_canonical");
+        debug_assert_eq!(
+            buf.len(),
+            CANONICAL_HEADER_LEN,
+            "błąd w serialize_canonical"
+        );
 
         buf
     }
@@ -1024,8 +1027,8 @@ mod tests {
             schema_version: 1,
             records: vec![VaultRecord {
                 id: [
-                    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0,
-                    0x4f, 0xd4, 0x30, 0xc8,
+                    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f,
+                    0xd4, 0x30, 0xc8,
                 ],
                 record_type: "login".to_string(),
                 title: "Test login".to_string(),
