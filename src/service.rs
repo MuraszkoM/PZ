@@ -8,7 +8,7 @@ use crate::clip;
 use crate::error::{Result, VaultError};
 use crate::prompt;
 use crate::record::Record;
-use crate::view;
+use crate::{format, storage, view};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -84,13 +84,41 @@ pub fn changepass() -> Result<()> {
     Err(VaultError::NotImplemented("changepass (SPEC §18)"))
 }
 
-pub fn verify(_path: &Path, with_password: bool) -> Result<()> {
+// vault verify <plik> [--with-password] - SPEC §12 / §13.
+// bez hasla: tylko walidacja STRUKTURALNA (magic, wersja, flagi, dlugosci pol).
+// nie potwierdza integralnosci body - od tego jest --with-password (laczy sie z open).
+pub fn verify(path: &Path, with_password: bool) -> Result<()> {
     if with_password {
-        Err(VaultError::NotImplemented(
-            "verify --with-password (SPEC §13)",
-        ))
-    } else {
-        Err(VaultError::NotImplemented("verify (SPEC §12)"))
+        // ta sama sciezka co open (HMAC, unwrap DEK, tag body) - dolaczy z `open`
+        return Err(VaultError::NotImplemented(
+            "verify --with-password (dolaczy z open, SPEC §13)",
+        ));
+    }
+    let bytes = storage::read_vault_file(path).map_err(map_storage_err)?;
+    verify_structure(&bytes)?;
+    println!("OK: struktura pliku poprawna.");
+    println!("(verify bez hasla nie potwierdza integralnosci - uzyj --with-password)");
+    Ok(())
+}
+
+// czysta walidacja strukturalna na bajtach (SPEC §12) - testowalna bez plikow.
+// bledy parsera traktujemy jako kontrolowany blad strukturalny (A8: nie crash).
+fn verify_structure(bytes: &[u8]) -> Result<()> {
+    format::parse_header(bytes).map_err(map_format_err)?;
+    Ok(())
+}
+
+// bledy strukturalne formatu -> InvalidStructure (kontrolowany blad, SPEC §12, A8)
+fn map_format_err(e: format::FormatError) -> VaultError {
+    VaultError::InvalidStructure(e.to_string())
+}
+
+// bledy storage -> I/O zostaje I/O, reszta jako blad strukturalny
+fn map_storage_err(e: storage::StorageError) -> VaultError {
+    match e {
+        storage::StorageError::Io(io) => VaultError::Io(io),
+        storage::StorageError::TempFileError(io) => VaultError::Io(io),
+        other => VaultError::InvalidStructure(other.to_string()),
     }
 }
 
@@ -107,4 +135,68 @@ fn now_nanos() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::{
+        KdfParams, VaultHeader, AEAD_ID_CHACHA20_POLY1305, HEADER_MAC_LEN, KDF_ID_ARGON2ID,
+        KDF_SALT_LEN, NONCE_BODY_LEN, NONCE_DEK_LEN, VERSION, WRAPPED_DEK_LEN,
+    };
+
+    // strukturalnie poprawne bajty pliku (naglowek + 1 bajt udawanego ct_body)
+    fn valid_bytes() -> Vec<u8> {
+        let h = VaultHeader {
+            version: VERSION,
+            flags: 0,
+            kdf_id: KDF_ID_ARGON2ID,
+            kdf_params: KdfParams::default_v1(),
+            kdf_salt: [0u8; KDF_SALT_LEN],
+            aead_id: AEAD_ID_CHACHA20_POLY1305,
+            nonce_dek: [1u8; NONCE_DEK_LEN],
+            wrapped_dek: [2u8; WRAPPED_DEK_LEN],
+            header_mac: [3u8; HEADER_MAC_LEN],
+            nonce_body: [4u8; NONCE_BODY_LEN],
+        };
+        let mut b = h.serialize_full();
+        b.push(0xAB); // minimalne ct_body
+        b
+    }
+
+    #[test]
+    fn verify_structure_accepts_valid_file() {
+        assert!(verify_structure(&valid_bytes()).is_ok());
+    }
+
+    #[test]
+    fn verify_structure_rejects_garbage() {
+        let err = verify_structure(b"to nie jest vault").unwrap_err();
+        assert!(matches!(err, VaultError::InvalidStructure(_)));
+    }
+
+    #[test]
+    fn verify_structure_rejects_empty() {
+        // A8: pusty plik -> kontrolowany blad, nie crash
+        assert!(matches!(
+            verify_structure(&[]),
+            Err(VaultError::InvalidStructure(_))
+        ));
+    }
+
+    #[test]
+    fn verify_structure_rejects_bad_magic() {
+        let mut b = valid_bytes();
+        b[0] = b'X';
+        assert!(matches!(
+            verify_structure(&b),
+            Err(VaultError::InvalidStructure(_))
+        ));
+    }
+
+    #[test]
+    fn verify_with_password_not_implemented_yet() {
+        let err = verify(Path::new("x.vlt"), true).unwrap_err();
+        assert!(matches!(err, VaultError::NotImplemented(_)));
+    }
 }
