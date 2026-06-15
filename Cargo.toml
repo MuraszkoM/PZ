@@ -29,6 +29,8 @@ clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
 # Wczytywanie hasła bez echa (ADR-006)
 rpassword = "7"
+# Schowek systemowy dla `get --clip` (ADR-007); bez featur od obrazkow
+arboard = { version = "3", default-features = false }
 
 [dev-dependencies]
 hex = "0.4"
