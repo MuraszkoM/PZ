@@ -1,11 +1,16 @@
 // vault service - sklejka miedzy CLI a krypto/formatem/storage
 //
-// init: tworzy nowy, pusty vault zaszyfrowany haslem (SPEC §15).
-// open: pelna sciezka kryptograficzna (SPEC §16) - czyta plik, parsuje naglowek,
-// wyprowadza klucze z hasla, sprawdza HMAC, rozpakowuje DEK, deszyfruje body i
-// parsuje CBOR. verify --with-password (§13) idzie ta sama sciezka, tylko bez
-// uruchamiania sesji. changepass: zmienia haslo glowne bez zmiany DEK (§18).
-// list/get nadal czekaja na wpiecie sesji (kolejny krok).
+// model bezstanowy (stateless): kazda komenda dotykajaca vaulta dostaje sciezke,
+// pyta o haslo, odszyfrowuje, robi swoje, zeruje DEK i konczy. "Sesja" trwa tyle
+// co jedna komenda (SPEC §16: DEK w pamieci tylko na czas sesji).
+//
+// init  (§15): tworzy nowy, pusty vault.
+// open  (§16): pelna sciezka deszyfrowania, wypisuje podsumowanie.
+// list  (F-03): metadane rekordow, bez sekretow.
+// get   (F-04): jeden rekord / pole / kopia do schowka.
+// add login: dopisuje rekord i zapisuje plik (§17).
+// changepass (§18): zmiana hasla bez zmiany DEK.
+// verify (§12/§13): walidacja strukturalna albo pelna kryptograficzna.
 
 use crate::clip;
 use crate::crypto;
@@ -131,8 +136,9 @@ fn assemble_vault_bytes(
     Ok(file)
 }
 
-// vault open <plik> - otwiera vault i deszyfruje rekordy (SPEC §16).
-// na razie wypisuje podsumowanie; wpiecie interaktywnej sesji to nastepny krok.
+// vault open <plik> - otwiera vault i wypisuje podsumowanie (SPEC §16).
+// to drugi wariant F-02 ("otworz i pokaz"); praca na rekordach idzie przez
+// osobne komendy list/get/add (model bezstanowy).
 pub fn open(path: &Path) -> Result<()> {
     let password = prompt::read_secret("Haslo glowne").map_err(VaultError::Io)?;
     let records = decrypt_vault(path, &password)?;
@@ -140,34 +146,47 @@ pub fn open(path: &Path) -> Result<()> {
     Ok(())
 }
 
-// vault add login - zbiera dane interaktywnie i buduje rekord (§4.2)
-pub fn add_login() -> Result<()> {
+// vault add login <plik> - dopisuje rekord login i zapisuje plik (F-05 + §17).
+// najpierw weryfikujemy dostep (haslo), potem zbieramy dane - zeby nie kazac
+// userowi wpisywac calego loginu, jesli i tak nie zna hasla.
+pub fn add_login(path: &Path) -> Result<()> {
+    // 1. otworz vault - dostajemy naglowek (do zapisu), DEK i sparsowane body
+    let password = prompt::read_secret("Haslo glowne").map_err(VaultError::Io)?;
+    let (header, dek, mut body) = decrypt_vault_body(path, &password)?;
+
+    // 2. zbierz dane nowego loginu (jawne pola + haslo bez echa)
     let input = prompt::collect_login().map_err(VaultError::Io)?;
     let id = *uuid::Uuid::new_v4().as_bytes();
     let now = now_nanos();
     let record = Record::new_login(input, id, now)
         .map_err(|why| VaultError::InvalidStructure(why.to_string()))?;
-    println!("Zbudowano rekord: {}", record.summary());
-    Err(VaultError::NotImplemented(
-        "zapis rekordu (czeka na wpiecie sesji open)",
-    ))
+
+    // 3. dopisz rekord do body (mapujac na typ formatu pod CBOR)
+    body.records.push(vault_record_from_record(&record)?);
+
+    // 4. zapis po modyfikacji (§17): ten sam DEK, nowy nonce_body, zapis atomowy
+    save_vault(path, &header, &dek, &body)?;
+
+    println!("Dodano rekord: {}", record.summary());
+    Ok(())
 }
 
-// vault list [--type T] [--tag X] - metadane rekordow, bez sekretow (F-03).
-// logika filtrowania i tabelki jest gotowa; brakuje tylko zaladowania rekordow.
-pub fn list(type_filter: Option<&str>, tag_filter: Option<&str>) -> Result<()> {
-    let records = load_open_vault()?;
+// vault list <plik> [--type T] [--tag X] - metadane rekordow, bez sekretow (F-03).
+pub fn list(path: &Path, type_filter: Option<&str>, tag_filter: Option<&str>) -> Result<()> {
+    let password = prompt::read_secret("Haslo glowne").map_err(VaultError::Io)?;
+    let records = decrypt_vault(path, &password)?;
     let filtered = view::filter(&records, type_filter, tag_filter);
     let owned: Vec<Record> = filtered.into_iter().cloned().collect();
     println!("{}", view::format_list(&owned));
     Ok(())
 }
 
-// vault get <id|nazwa> [--field F] [--clip] - pokazuje rekord (F-04).
+// vault get <plik> <id|nazwa> [--field F] [--clip] - pokazuje rekord (F-04).
 // bez flag: pelny rekord; --field: surowa wartosc jednego pola;
 // --clip: kopiuje wybrane pole do schowka (wymaga --field) i czysci po 30 s (F-18).
-pub fn get(id_or_name: &str, field: Option<&str>, clip: bool) -> Result<()> {
-    let records = load_open_vault()?;
+pub fn get(path: &Path, id_or_name: &str, field: Option<&str>, clip: bool) -> Result<()> {
+    let password = prompt::read_secret("Haslo glowne").map_err(VaultError::Io)?;
+    let records = decrypt_vault(path, &password)?;
     let record = view::find(&records, id_or_name)
         .ok_or_else(|| VaultError::InvalidStructure(format!("nie znaleziono: {id_or_name}")))?;
 
@@ -210,7 +229,7 @@ pub fn get(id_or_name: &str, field: Option<&str>, clip: bool) -> Result<()> {
 pub fn changepass(path: &Path) -> Result<()> {
     // 1. otworz starym haslem -> dostajemy DEK i odszyfrowane body (§18.1)
     let old_password = prompt::read_secret("Stare haslo glowne").map_err(VaultError::Io)?;
-    let (dek, mut body_cbor) = decrypt_vault_dek_and_body(path, &old_password)?;
+    let (_old_header, dek, mut body_cbor) = decrypt_to_body_cbor(path, &old_password)?;
 
     // 2. nowe haslo z potwierdzeniem (§18.2)
     let new_password =
@@ -265,14 +284,16 @@ pub fn verify(path: &Path, with_password: bool) -> Result<()> {
     Ok(())
 }
 
-// ─── Rdzen open / verify --with-password / changepass (SPEC §16 / §13 / §18) ──
+// ─── Rdzen deszyfrowania (SPEC §16) ───────────────────────────────────────────
 
-// pelna sciezka deszyfrowania do poziomu DEK + odszyfrowanego body_cbor:
+// pelna sciezka deszyfrowania do poziomu: naglowek + DEK + odszyfrowane body_cbor.
 // plik -> naglowek -> klucze z hasla -> HMAC -> DEK -> body. NIE parsuje jeszcze
-// CBOR ani nie mapuje rekordow - to robi warstwa wyzej. changepass potrzebuje
-// wlasnie DEK + surowego body, open dorabia na tym parsowanie rekordow.
-// Wszystkie bledy kryptograficzne zwijaja sie do BadPasswordOrCorrupted (§14).
-fn decrypt_vault_dek_and_body(path: &Path, password: &str) -> Result<(crypto::Dek, Vec<u8>)> {
+// CBOR ani nie mapuje rekordow. Wszystkie bledy kryptograficzne zwijaja sie do
+// jednego BadPasswordOrCorrupted (ADR-005 / §14), zeby nie robic oracle'a.
+fn decrypt_to_body_cbor(
+    path: &Path,
+    password: &str,
+) -> Result<(VaultHeader, crypto::Dek, Vec<u8>)> {
     // 1-2. wczytaj plik i sparsuj naglowek (bledy strukturalne = §12)
     let bytes = storage::read_vault_file(path).map_err(map_storage_err)?;
     let header = format::parse_header(&bytes).map_err(map_format_err)?;
@@ -307,23 +328,78 @@ fn decrypt_vault_dek_and_body(path: &Path, password: &str) -> Result<(crypto::De
     let body_cbor =
         crypto::decrypt_body(&dek, &header.nonce_body, ct_body, &aad).map_err(map_crypto_err)?;
 
-    Ok((dek, body_cbor))
+    Ok((header, dek, body_cbor))
 }
 
-// pelna sciezka open (§16): jak wyzej + parsowanie CBOR i mapowanie na rekordy.
-fn decrypt_vault(path: &Path, password: &str) -> Result<Vec<Record>> {
-    let (_dek, body_cbor) = decrypt_vault_dek_and_body(path, password)?;
-
-    // 8. sparsuj CBOR. uszkodzone body po udanym deszyfrowaniu nie powinno sie
-    // zdarzyc, ale traktujemy je jak korupcje (ten sam komunikat, §14).
+// jak wyzej, ale dodatkowo parsuje CBOR -> VaultBody. uzywa add (potrzebuje
+// naglowka do zapisu, DEK i listy rekordow w formacie wewnetrznym).
+fn decrypt_vault_body(
+    path: &Path,
+    password: &str,
+) -> Result<(VaultHeader, crypto::Dek, VaultBody)> {
+    let (header, dek, body_cbor) = decrypt_to_body_cbor(path, password)?;
+    // uszkodzone body po udanym deszyfrowaniu nie powinno sie zdarzyc, ale
+    // traktujemy je jak korupcje (ten sam komunikat, §14).
     let body = format::parse_body(&body_cbor).map_err(|_| VaultError::BadPasswordOrCorrupted)?;
+    Ok((header, dek, body))
+}
 
-    // 9. zmapuj rekordy formatu na model aplikacji (record::Record)
+// pelna sciezka open (§16): naglowek+DEK+body -> parsowanie -> rekordy aplikacji.
+// uzywaja open / list / get / verify --with-password.
+fn decrypt_vault(path: &Path, password: &str) -> Result<Vec<Record>> {
+    let (_header, _dek, body) = decrypt_vault_body(path, password)?;
     body.records.iter().map(record_from_vault).collect()
 }
 
-// mapowanie rekordu z warstwy formatu (format::VaultRecord) na model aplikacji
-// (record::Record). W MVP obslugujemy tylko login (SPEC §3.3 / §10).
+// ─── Zapis po modyfikacji (SPEC §17) ──────────────────────────────────────────
+
+// zapis zmodyfikowanego body: ten sam DEK i ten sam naglowek (sol, wrapped_dek,
+// header_mac bez zmian -> AAD ten sam), tylko NOWY nonce_body i przeszyfrowane
+// body, na koniec zapis atomowy (§19). nonce_body losujemy z OS CSPRNG.
+fn save_vault(
+    path: &Path,
+    header: &VaultHeader,
+    dek: &crypto::Dek,
+    body: &VaultBody,
+) -> Result<()> {
+    let mut nonce_body = [0u8; format::NONCE_BODY_LEN];
+    let mut rng = rand::rngs::OsRng;
+    rng.fill_bytes(&mut nonce_body);
+    save_vault_with_nonce(path, header, dek, body, nonce_body)
+}
+
+// rdzen zapisu z wstrzyknietym nonce_body - deterministyczny, testowalny.
+// nigdy nie wolno uzyc tego samego nonce_body z tym samym DEK (ADR-003), dlatego
+// save_vault zawsze losuje swiezy. canonical header i header_mac sa nietkniete,
+// wiec stare haslo dalej otwiera (to NIE jest changepass) - zmienia sie tylko body.
+fn save_vault_with_nonce(
+    path: &Path,
+    header: &VaultHeader,
+    dek: &crypto::Dek,
+    body: &VaultBody,
+    nonce_body: [u8; format::NONCE_BODY_LEN],
+) -> Result<()> {
+    let body_cbor = format::serialize_body(body).map_err(map_format_err)?;
+
+    // aad = canonical_header || header_mac - oba poza nonce_body, wiec bez zmian
+    let aad = header.aad_for_body();
+    let ct_body =
+        crypto::encrypt_body(dek, &nonce_body, &body_cbor, &aad).map_err(map_crypto_err)?;
+
+    // ten sam naglowek, tylko podmieniony nonce_body (offset 132-143)
+    let mut new_header = header.clone();
+    new_header.nonce_body = nonce_body;
+
+    let mut file = new_header.serialize_full();
+    file.extend_from_slice(&ct_body);
+    storage::write_vault_file_atomic(path, &file).map_err(map_storage_err)?;
+    Ok(())
+}
+
+// ─── Mapowanie rekordow format <-> model aplikacji ────────────────────────────
+
+// format::VaultRecord -> record::Record (po deszyfrowaniu, pod view/clip).
+// W MVP obslugujemy tylko login (SPEC §3.3 / §10).
 fn record_from_vault(vr: &format::VaultRecord) -> Result<Record> {
     let (rtype, fields) = match &vr.fields {
         format::RecordFields::Login {
@@ -360,6 +436,40 @@ fn record_from_vault(vr: &format::VaultRecord) -> Result<Record> {
     })
 }
 
+// record::Record -> format::VaultRecord (pod zapis do CBOR). odwrotnosc
+// record_from_vault. W MVP tylko login - pola url/username/password z mapy fields.
+fn vault_record_from_record(r: &Record) -> Result<format::VaultRecord> {
+    let fields = match r.rtype {
+        RecordType::Login => {
+            // wyciagnij pole tekstowe z mapy fields albo blad strukturalny
+            let text = |k: &str| -> Result<String> {
+                match r.fields.get(k) {
+                    Some(FieldValue::Text(s)) => Ok(s.clone()),
+                    _ => Err(VaultError::InvalidStructure(format!(
+                        "rekord login bez pola: {k}"
+                    ))),
+                }
+            };
+            format::RecordFields::Login {
+                url: text("url")?,
+                username: text("username")?,
+                password: text("password")?,
+            }
+        }
+    };
+
+    Ok(format::VaultRecord {
+        id: r.id,
+        record_type: r.rtype.as_str().to_string(),
+        title: r.title.clone(),
+        tags: r.tags.clone(),
+        notes: r.notes.clone(),
+        created_at: r.created_at,
+        modified_at: r.modified_at,
+        fields,
+    })
+}
+
 // ─── Walidacja strukturalna bez hasla (SPEC §12) ──────────────────────────────
 
 // czysta walidacja strukturalna na bajtach - testowalna bez plikow.
@@ -391,14 +501,6 @@ fn map_crypto_err(_e: crypto::CryptoError) -> VaultError {
     VaultError::BadPasswordOrCorrupted
 }
 
-// zaladowanie rekordow z otwartego vaulta. docelowo dostarczy je sesja
-// (open trzyma rekordy w pamieci). na razie list/get czekaja na ten krok.
-fn load_open_vault() -> Result<Vec<Record>> {
-    Err(VaultError::NotImplemented(
-        "zaladowanie rekordow (czeka na wpiecie sesji open)",
-    ))
-}
-
 fn now_nanos() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -414,6 +516,7 @@ mod tests {
         serialize_body, RecordFields, VaultRecord, AEAD_ID_CHACHA20_POLY1305, HEADER_MAC_LEN,
         KDF_ID_ARGON2ID, KDF_SALT_LEN, NONCE_BODY_LEN, NONCE_DEK_LEN, VERSION, WRAPPED_DEK_LEN,
     };
+    use crate::record::LoginInput;
     use std::io::Write;
 
     const TEST_PASSWORD: &str = "correct horse battery staple";
@@ -472,22 +575,18 @@ mod tests {
     // ── pelna sciezka open/decrypt (§16) - prawdziwy zaszyfrowany vault ────────
 
     // buduje prawdziwy, zaszyfrowany plik vault z jednym rekordem login.
-    // robi to recznie ta sama sciezka co init (§15), zeby przetestowac open.
     fn build_encrypted_vault() -> Vec<u8> {
         let kdf_salt = [7u8; KDF_SALT_LEN];
         let nonce_dek = [9u8; NONCE_DEK_LEN];
         let nonce_body = [11u8; NONCE_BODY_LEN];
 
-        // klucze z hasla (te same parametry co domyslne v1)
         let master =
             crypto::derive_master_key(TEST_PASSWORD.as_bytes(), &kdf_salt, 65536, 3, 1).unwrap();
         let keys = crypto::derive_keys(&master).unwrap();
 
-        // staly DEK, zeby test byl deterministyczny, i jego opakowanie
         let dek = Dek::from_bytes([42u8; 32]);
         let wrapped = crypto::wrap_dek(&keys.wrap_key, &nonce_dek, &dek).unwrap();
 
-        // naglowek: najpierw bez maca, policz canonical, potem dolicz header_mac
         let mut header = VaultHeader {
             version: VERSION,
             flags: 0,
@@ -503,7 +602,6 @@ mod tests {
         let canonical = header.serialize_canonical();
         header.header_mac = crypto::compute_header_mac(&keys.header_mac_key, &canonical);
 
-        // body z jednym loginem -> canonical CBOR
         let body = VaultBody {
             schema_version: 1,
             records: vec![VaultRecord {
@@ -523,11 +621,9 @@ mod tests {
         };
         let body_cbor = serialize_body(&body).unwrap();
 
-        // zaszyfruj body; aad = canonical || header_mac
         let aad = header.aad_for_body();
         let ct_body = crypto::encrypt_body(&dek, &nonce_body, &body_cbor, &aad).unwrap();
 
-        // sklej plik: pelny naglowek (z mac i nonce_body) || ct_body
         let mut file = header.serialize_full();
         file.extend_from_slice(&ct_body);
         file
@@ -553,7 +649,6 @@ mod tests {
         let r = &records[0];
         assert_eq!(r.title, "github");
         assert_eq!(r.rtype, RecordType::Login);
-        // pola zostaly zmapowane z formatu na model aplikacji
         assert_eq!(view::field_value(r, "username").as_deref(), Some("czarny"));
         assert_eq!(
             view::field_value(r, "password").as_deref(),
@@ -582,7 +677,6 @@ mod tests {
     #[test]
     fn open_tampered_header_is_bad_or_corrupted() {
         // A4: zmiana bajtu w wrapped_dek (offset 52, czesc canonical header)
-        // -> HMAC naglowka nie pasuje. (offset bezpieczny - nie rusza kosztu KDF)
         let mut bytes = build_encrypted_vault();
         bytes[52] ^= 0xFF;
         let (_dir, path) = write_temp(&bytes);
@@ -594,7 +688,6 @@ mod tests {
 
     #[test]
     fn init_then_open_roundtrip_empty_vault() {
-        // rdzen init buduje pusty vault; po zapisaniu open zwraca 0 rekordow
         let bytes = build_new_vault_bytes(
             TEST_PASSWORD,
             [5u8; KDF_SALT_LEN],
@@ -642,11 +735,9 @@ mod tests {
 
     const NEW_PASSWORD: &str = "nowe haslo glowne super dlugie";
 
-    // pomocnik: przepakuj istniejacy zaszyfrowany vault na nowe haslo,
-    // tak jak robi to changepass() (ten sam DEK + body, nowa sol/nonce'y).
     fn rewrap_to_new_password(old_bytes: &[u8]) -> Vec<u8> {
         let (_dir, path) = write_temp(old_bytes);
-        let (dek, body_cbor) = decrypt_vault_dek_and_body(&path, TEST_PASSWORD).unwrap();
+        let (_h, dek, body_cbor) = decrypt_to_body_cbor(&path, TEST_PASSWORD).unwrap();
         assemble_vault_bytes(
             NEW_PASSWORD,
             &dek,
@@ -660,7 +751,6 @@ mod tests {
 
     #[test]
     fn changepass_new_password_opens_and_keeps_records() {
-        // po zmianie hasla rekordy (i ich sekrety) sa nienaruszone - DEK ten sam
         let new_bytes = rewrap_to_new_password(&build_encrypted_vault());
         let (_dir, path) = write_temp(&new_bytes);
         let records = decrypt_vault(&path, NEW_PASSWORD).unwrap();
@@ -685,26 +775,79 @@ mod tests {
     }
 
     #[test]
-    fn changepass_changes_salt_and_nonce_body() {
-        // nowa sol (offset 19-34) i nowy nonce_body (offset 132-143) - nie wolno
-        // reuse nonce_body z tym samym DEK. porownujemy naglowki przed i po.
-        let old_bytes = build_encrypted_vault();
-        let new_bytes = rewrap_to_new_password(&old_bytes);
-        assert_ne!(
-            &old_bytes[19..35],
-            &new_bytes[19..35],
-            "sol musi sie zmienic"
-        );
-        assert_ne!(
-            &old_bytes[132..144],
-            &new_bytes[132..144],
-            "nonce_body musi sie zmienic"
-        );
-    }
-
-    #[test]
     fn changepass_output_passes_structural_verify() {
         let new_bytes = rewrap_to_new_password(&build_encrypted_vault());
         assert!(verify_structure(&new_bytes).is_ok());
+    }
+
+    // ── zapis po modyfikacji (§17) + add (F-05) ───────────────────────────────
+
+    #[test]
+    fn save_adds_record_and_reopens() {
+        // sesja: otwórz, dopisz rekord, zapisz (§17), otwórz ponownie -> 2 rekordy
+        let (_dir, path) = write_temp(&build_encrypted_vault());
+        let (header, dek, mut body) = decrypt_vault_body(&path, TEST_PASSWORD).unwrap();
+        assert_eq!(body.records.len(), 1);
+
+        body.records.push(VaultRecord {
+            id: [2u8; 16],
+            record_type: "login".to_string(),
+            title: "gitlab".to_string(),
+            tags: vec![],
+            notes: String::new(),
+            created_at: 2,
+            modified_at: 2,
+            fields: RecordFields::Login {
+                url: "https://gitlab.com".to_string(),
+                username: "u2".to_string(),
+                password: "p2".to_string(),
+            },
+        });
+        save_vault_with_nonce(&path, &header, &dek, &body, [77u8; NONCE_BODY_LEN]).unwrap();
+
+        let records = decrypt_vault(&path, TEST_PASSWORD).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().any(|r| r.title == "github"));
+        assert!(records.iter().any(|r| r.title == "gitlab"));
+    }
+
+    #[test]
+    fn save_rotates_nonce_body_but_keeps_header() {
+        // §17: zapis zmienia tylko nonce_body i ct_body; naglowek (0..132) bez zmian
+        let orig = build_encrypted_vault();
+        let (_dir, path) = write_temp(&orig);
+        let (header, dek, body) = decrypt_vault_body(&path, TEST_PASSWORD).unwrap();
+
+        save_vault_with_nonce(&path, &header, &dek, &body, [99u8; NONCE_BODY_LEN]).unwrap();
+        let after = std::fs::read(&path).unwrap();
+
+        // canonical header + header_mac (0..132) nietkniete -> stare haslo dalej dziala
+        assert_eq!(&orig[..132], &after[..132]);
+        // nowy nonce_body (offset 132-143)
+        assert_eq!(&after[132..144], &[99u8; NONCE_BODY_LEN]);
+        assert_ne!(&orig[132..144], &after[132..144]);
+        // i nadal otwiera sie tym samym haslem
+        assert_eq!(decrypt_vault(&path, TEST_PASSWORD).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn record_maps_to_format_and_back() {
+        // Record (model aplikacji) -> VaultRecord (format) -> Record, pola zachowane
+        let inp = LoginInput {
+            title: "x".to_string(),
+            url: "https://u".to_string(),
+            username: "usr".to_string(),
+            password: "pw".to_string(),
+            tags: vec!["t".to_string()],
+            notes: "n".to_string(),
+        };
+        let rec = Record::new_login(inp, [3u8; 16], 5).unwrap();
+        let vr = vault_record_from_record(&rec).unwrap();
+        assert_eq!(vr.record_type, "login");
+
+        let back = record_from_vault(&vr).unwrap();
+        assert_eq!(back.title, "x");
+        assert_eq!(view::field_value(&back, "username").as_deref(), Some("usr"));
+        assert_eq!(view::field_value(&back, "password").as_deref(), Some("pw"));
     }
 }

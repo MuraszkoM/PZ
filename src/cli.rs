@@ -1,6 +1,8 @@
 // cli - komendy (clap) i rozdzielanie ich do service
 //
-// komendy z README: init, open, add login, list, get, changepass, verify
+// komendy z README: init, open, add login, list, get, changepass, verify.
+// model bezstanowy: kazda komenda dotykajaca vaulta bierze sciezke <plik>
+// i pyta o haslo (spojnie z init/open/verify/changepass).
 
 use crate::error::VaultError;
 use crate::service;
@@ -20,17 +22,18 @@ pub enum Command {
     Init {
         path: PathBuf,
     },
-    // otworz istniejacy (SPEC §16)
+    // otworz istniejacy i pokaz podsumowanie (SPEC §16)
     Open {
         path: PathBuf,
     },
-    // dodaj rekord
+    // dodaj rekord do vaulta
     Add {
         #[command(subcommand)]
         kind: AddKind,
     },
     // wypisz rekordy (tylko metadane, bez sekretow). filtry opcjonalne.
     List {
+        path: PathBuf,
         // pokaz tylko rekordy danego typu, np. --type login
         #[arg(long = "type")]
         type_filter: Option<String>,
@@ -40,6 +43,7 @@ pub enum Command {
     },
     // pobierz rekord po id albo nazwie (F-04: pokazuje rekord)
     Get {
+        path: PathBuf,
         id_or_name: String,
         // wypisz tylko jedno pole (surowa wartosc), np. --field password
         #[arg(long)]
@@ -63,8 +67,8 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum AddKind {
-    // login: url, username, password (SPEC §10)
-    Login,
+    // login: url, username, password (SPEC §10). dopisuje do <plik>.
+    Login { path: PathBuf },
 }
 
 pub fn run() -> i32 {
@@ -84,17 +88,19 @@ fn dispatch(command: Command) -> Result<(), VaultError> {
         Command::Init { path } => service::init(&path),
         Command::Open { path } => service::open(&path),
         Command::Add { kind } => match kind {
-            AddKind::Login => service::add_login(),
+            AddKind::Login { path } => service::add_login(&path),
         },
         Command::List {
+            path,
             type_filter,
             tag_filter,
-        } => service::list(type_filter.as_deref(), tag_filter.as_deref()),
+        } => service::list(&path, type_filter.as_deref(), tag_filter.as_deref()),
         Command::Get {
+            path,
             id_or_name,
             field,
             clip,
-        } => service::get(&id_or_name, field.as_deref(), clip),
+        } => service::get(&path, &id_or_name, field.as_deref(), clip),
         Command::Changepass { path } => service::changepass(&path),
         Command::Verify {
             path,
@@ -120,22 +126,31 @@ mod tests {
     }
 
     #[test]
-    fn parses_add_login() {
-        let cli = Cli::try_parse_from(["vault", "add", "login"]).unwrap();
+    fn parses_add_login_with_path() {
+        let cli = Cli::try_parse_from(["vault", "add", "login", "moje.vlt"]).unwrap();
         match cli.command {
-            Command::Add { kind } => assert!(matches!(kind, AddKind::Login)),
+            Command::Add { kind } => assert!(matches!(kind, AddKind::Login { .. })),
             _ => panic!("mialo byc Add"),
         }
     }
 
     #[test]
+    fn add_login_requires_path() {
+        // add login bez sciezki ma byc odrzucone
+        assert!(Cli::try_parse_from(["vault", "add", "login"]).is_err());
+    }
+
+    #[test]
     fn parses_list_with_filters() {
-        let cli =
-            Cli::try_parse_from(["vault", "list", "--type", "login", "--tag", "praca"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "vault", "list", "moje.vlt", "--type", "login", "--tag", "praca",
+        ])
+        .unwrap();
         match cli.command {
             Command::List {
                 type_filter,
                 tag_filter,
+                ..
             } => {
                 assert_eq!(type_filter.as_deref(), Some("login"));
                 assert_eq!(tag_filter.as_deref(), Some("praca"));
@@ -146,11 +161,12 @@ mod tests {
 
     #[test]
     fn parses_list_without_filters() {
-        let cli = Cli::try_parse_from(["vault", "list"]).unwrap();
+        let cli = Cli::try_parse_from(["vault", "list", "moje.vlt"]).unwrap();
         match cli.command {
             Command::List {
                 type_filter,
                 tag_filter,
+                ..
             } => {
                 assert!(type_filter.is_none());
                 assert!(tag_filter.is_none());
@@ -160,13 +176,21 @@ mod tests {
     }
 
     #[test]
+    fn list_requires_path() {
+        assert!(Cli::try_parse_from(["vault", "list"]).is_err());
+    }
+
+    #[test]
     fn parses_get_with_field() {
-        let cli = Cli::try_parse_from(["vault", "get", "github", "--field", "password"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["vault", "get", "moje.vlt", "github", "--field", "password"])
+                .unwrap();
         match cli.command {
             Command::Get {
                 id_or_name,
                 field,
                 clip,
+                ..
             } => {
                 assert_eq!(id_or_name, "github");
                 assert_eq!(field.as_deref(), Some("password"));
@@ -178,7 +202,7 @@ mod tests {
 
     #[test]
     fn parses_get_without_field() {
-        let cli = Cli::try_parse_from(["vault", "get", "github"]).unwrap();
+        let cli = Cli::try_parse_from(["vault", "get", "moje.vlt", "github"]).unwrap();
         match cli.command {
             Command::Get {
                 id_or_name, field, ..
@@ -193,13 +217,15 @@ mod tests {
     #[test]
     fn clip_requires_field() {
         // --clip bez --field ma byc odrzucone juz przez clap
-        assert!(Cli::try_parse_from(["vault", "get", "github", "--clip"]).is_err());
+        assert!(Cli::try_parse_from(["vault", "get", "moje.vlt", "github", "--clip"]).is_err());
     }
 
     #[test]
     fn parses_get_with_clip() {
-        let cli = Cli::try_parse_from(["vault", "get", "github", "--field", "password", "--clip"])
-            .unwrap();
+        let cli = Cli::try_parse_from([
+            "vault", "get", "moje.vlt", "github", "--field", "password", "--clip",
+        ])
+        .unwrap();
         match cli.command {
             Command::Get { clip, field, .. } => {
                 assert!(clip);
@@ -217,7 +243,6 @@ mod tests {
 
     #[test]
     fn changepass_requires_path() {
-        // changepass bez sciezki ma byc odrzucone (jak init/open/verify)
         assert!(Cli::try_parse_from(["vault", "changepass"]).is_err());
     }
 
