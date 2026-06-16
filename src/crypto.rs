@@ -204,7 +204,7 @@ pub fn compute_header_mac(
     header_mac_key: &HeaderMacKey,
     canonical_header: &[u8],
 ) -> [u8; HMAC_LEN] {
-    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&header_mac_key.0)
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&header_mac_key.0)
         .expect("HMAC akceptuje każdy rozmiar klucza");
     mac.update(canonical_header);
     let result = mac.finalize().into_bytes();
@@ -220,7 +220,7 @@ pub fn verify_header_mac(
     canonical_header: &[u8],
     expected_mac: &[u8],
 ) -> Result<(), CryptoError> {
-    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&header_mac_key.0)
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&header_mac_key.0)
         .expect("HMAC akceptuje każdy rozmiar klucza");
     mac.update(canonical_header);
     mac.verify_slice(expected_mac)
