@@ -8,3 +8,4 @@ pub mod record;
 pub mod service;
 pub mod storage;
 pub mod view;
+pub mod crypto;

@@ -19,7 +19,7 @@
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
-    aead::{Aead, AeadInPlace, KeyInit, Payload},
+    aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
 };
 use hkdf::Hkdf;
@@ -205,9 +205,9 @@ pub fn compute_header_mac(
     canonical_header: &[u8],
 ) -> [u8; HMAC_LEN] {
     let mut mac =
-        Hmac::<Sha256>::new_from_slice(&header_mac_key.0).expect("HMAC akceptuje każdy rozmiar klucza");
-    mac.update(canonical_header);
-    let result = mac.finalize().into_bytes();
+<Hmac<Sha256> as KeyInit>::new_from_slice(&header_mac_key.0)
+            .expect("HMAC akceptuje każdy rozmiar klucza");
+    mac.update(canonical_header);    let result = mac.finalize().into_bytes();
     result.into()
 }
 
@@ -221,8 +221,8 @@ pub fn verify_header_mac(
     expected_mac: &[u8],
 ) -> Result<(), CryptoError> {
     let mut mac =
-        Hmac::<Sha256>::new_from_slice(&header_mac_key.0).expect("HMAC akceptuje każdy rozmiar klucza");
-    mac.update(canonical_header);
+<Hmac<Sha256> as KeyInit>::new_from_slice(&header_mac_key.0)
+            .expect("HMAC akceptuje każdy rozmiar klucza");    mac.update(canonical_header);
     mac.verify_slice(expected_mac)
         .map_err(|_| CryptoError::HmacMismatch)
 }
