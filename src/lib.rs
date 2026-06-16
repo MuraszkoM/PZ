@@ -1,6 +1,7 @@
 // moduly projektu
 pub mod cli;
 pub mod clip;
+pub mod crypto;
 pub mod error;
 pub mod format;
 pub mod prompt;
