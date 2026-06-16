@@ -4,7 +4,8 @@
 // open: pelna sciezka kryptograficzna (SPEC §16) - czyta plik, parsuje naglowek,
 // wyprowadza klucze z hasla, sprawdza HMAC, rozpakowuje DEK, deszyfruje body i
 // parsuje CBOR. verify --with-password (§13) idzie ta sama sciezka, tylko bez
-// uruchamiania sesji. list/get nadal czekaja na wpiecie sesji (kolejny krok).
+// uruchamiania sesji. changepass: zmienia haslo glowne bez zmiany DEK (§18).
+// list/get nadal czekaja na wpiecie sesji (kolejny krok).
 
 use crate::clip;
 use crate::crypto;
@@ -62,6 +63,31 @@ fn build_new_vault_bytes(
     nonce_dek: [u8; format::NONCE_DEK_LEN],
     nonce_body: [u8; format::NONCE_BODY_LEN],
 ) -> Result<Vec<u8>> {
+    let dek = crypto::Dek::from_bytes(dek_bytes);
+
+    // puste body -> canonical CBOR
+    let body = VaultBody {
+        schema_version: 1,
+        records: vec![],
+    };
+    let body_cbor = format::serialize_body(&body).map_err(map_format_err)?;
+
+    // dalej leci wspolny zlozyciel pliku (ten sam co changepass)
+    assemble_vault_bytes(password, &dek, &body_cbor, kdf_salt, nonce_dek, nonce_body)
+}
+
+// wspolny zlozyciel pliku vault: z hasla + DEK + gotowego body_cbor buduje pelne
+// bajty pliku (naglowek z mac i nonce_body || ct_body). cala logika layoutu w
+// jednym miejscu - uzywaja go init (swiezy DEK, puste body) i changepass
+// (ten sam DEK, istniejace body, nowa sol/nonce'y). §15 kroki 4-13 / §18 kroki 4-7.
+fn assemble_vault_bytes(
+    password: &str,
+    dek: &crypto::Dek,
+    body_cbor: &[u8],
+    kdf_salt: [u8; format::KDF_SALT_LEN],
+    nonce_dek: [u8; format::NONCE_DEK_LEN],
+    nonce_body: [u8; format::NONCE_BODY_LEN],
+) -> Result<Vec<u8>> {
     let params = KdfParams::default_v1();
 
     // klucze z hasla
@@ -75,9 +101,8 @@ fn build_new_vault_bytes(
     .map_err(map_crypto_err)?;
     let keys = crypto::derive_keys(&master).map_err(map_crypto_err)?;
 
-    // opakuj DEK
-    let dek = crypto::Dek::from_bytes(dek_bytes);
-    let wrapped = crypto::wrap_dek(&keys.wrap_key, &nonce_dek, &dek).map_err(map_crypto_err)?;
+    // opakuj DEK aktualnym wrap_key
+    let wrapped = crypto::wrap_dek(&keys.wrap_key, &nonce_dek, dek).map_err(map_crypto_err)?;
 
     // naglowek: najpierw bez maca, policz canonical, potem dolicz header_mac
     let mut header = VaultHeader {
@@ -95,17 +120,10 @@ fn build_new_vault_bytes(
     header.header_mac =
         crypto::compute_header_mac(&keys.header_mac_key, &header.serialize_canonical());
 
-    // puste body -> canonical CBOR
-    let body = VaultBody {
-        schema_version: 1,
-        records: vec![],
-    };
-    let body_cbor = format::serialize_body(&body).map_err(map_format_err)?;
-
     // zaszyfruj body; aad = canonical_header || header_mac (§8)
     let aad = header.aad_for_body();
     let ct_body =
-        crypto::encrypt_body(&dek, &nonce_body, &body_cbor, &aad).map_err(map_crypto_err)?;
+        crypto::encrypt_body(dek, &nonce_body, body_cbor, &aad).map_err(map_crypto_err)?;
 
     // sklej plik: pelny naglowek (z mac i nonce_body) || ct_body
     let mut file = header.serialize_full();
@@ -182,8 +200,51 @@ pub fn get(id_or_name: &str, field: Option<&str>, clip: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn changepass() -> Result<()> {
-    Err(VaultError::NotImplemented("changepass (SPEC §18)"))
+// vault changepass <plik> - zmienia haslo glowne BEZ zmiany DEK (SPEC §18).
+//
+// idea: DEK zostaje ten sam (rekordy nie wymagaja przeszyfrowania innym kluczem),
+// zmienia sie tylko warstwa "opakowania": nowa sol -> nowy master_key -> nowy
+// wrap_key i header_mac_key. DEK pakujemy na nowo, naglowek liczymy od zera, a
+// body przeszyfrowujemy bo zmienil sie AAD (canonical_header || header_mac).
+// po zmianie stare haslo nie otwiera juz biezacej wersji pliku (S-5 / A6).
+pub fn changepass(path: &Path) -> Result<()> {
+    // 1. otworz starym haslem -> dostajemy DEK i odszyfrowane body (§18.1)
+    let old_password = prompt::read_secret("Stare haslo glowne").map_err(VaultError::Io)?;
+    let (dek, mut body_cbor) = decrypt_vault_dek_and_body(path, &old_password)?;
+
+    // 2. nowe haslo z potwierdzeniem (§18.2)
+    let new_password =
+        prompt::read_secret_confirmed("Nowe haslo glowne").map_err(VaultError::Io)?;
+
+    // 3 + 6. nowa sol i NOWE nonce'y z OS CSPRNG. nonce_body musi byc nowy -
+    // ten sam DEK + ten sam nonce_body = katastrofalny reuse nonce w AEAD (ADR-003).
+    let mut kdf_salt = [0u8; format::KDF_SALT_LEN];
+    let mut nonce_dek = [0u8; format::NONCE_DEK_LEN];
+    let mut nonce_body = [0u8; format::NONCE_BODY_LEN];
+    let mut rng = rand::rngs::OsRng;
+    rng.fill_bytes(&mut kdf_salt);
+    rng.fill_bytes(&mut nonce_dek);
+    rng.fill_bytes(&mut nonce_body);
+
+    // 4 + 5 + 7. ten sam DEK, nowe klucze z nowego hasla, body przeszyfrowane
+    // (nowy AAD bo zmienil sie naglowek). cala robota w assemble_vault_bytes.
+    let bytes = assemble_vault_bytes(
+        &new_password,
+        &dek,
+        &body_cbor,
+        kdf_salt,
+        nonce_dek,
+        nonce_body,
+    )?;
+
+    // 8. zapis atomowy - albo stara, albo nowa wersja, nigdy "w polowie" (§19)
+    storage::write_vault_file_atomic(path, &bytes).map_err(map_storage_err)?;
+
+    // wyzeruj jawne body (zawiera sekrety); DEK zeroizuje sie sam przy Drop (NF-11)
+    body_cbor.zeroize();
+
+    println!("Zmieniono haslo glowne dla: {}", path.display());
+    Ok(())
 }
 
 // vault verify <plik> [--with-password] - SPEC §12 / §13.
@@ -204,12 +265,14 @@ pub fn verify(path: &Path, with_password: bool) -> Result<()> {
     Ok(())
 }
 
-// ─── Rdzen open / verify --with-password (SPEC §16 / §13) ─────────────────────
+// ─── Rdzen open / verify --with-password / changepass (SPEC §16 / §13 / §18) ──
 
-// pelna sciezka deszyfrowania: plik -> naglowek -> klucze z hasla -> HMAC ->
-// DEK -> body -> CBOR -> rekordy. Wszystkie bledy kryptograficzne zwijaja sie
-// do jednego BadPasswordOrCorrupted (ADR-005 / §14), zeby nie robic oracle'a.
-fn decrypt_vault(path: &Path, password: &str) -> Result<Vec<Record>> {
+// pelna sciezka deszyfrowania do poziomu DEK + odszyfrowanego body_cbor:
+// plik -> naglowek -> klucze z hasla -> HMAC -> DEK -> body. NIE parsuje jeszcze
+// CBOR ani nie mapuje rekordow - to robi warstwa wyzej. changepass potrzebuje
+// wlasnie DEK + surowego body, open dorabia na tym parsowanie rekordow.
+// Wszystkie bledy kryptograficzne zwijaja sie do BadPasswordOrCorrupted (§14).
+fn decrypt_vault_dek_and_body(path: &Path, password: &str) -> Result<(crypto::Dek, Vec<u8>)> {
     // 1-2. wczytaj plik i sparsuj naglowek (bledy strukturalne = §12)
     let bytes = storage::read_vault_file(path).map_err(map_storage_err)?;
     let header = format::parse_header(&bytes).map_err(map_format_err)?;
@@ -243,6 +306,13 @@ fn decrypt_vault(path: &Path, password: &str) -> Result<Vec<Record>> {
     let aad = header.aad_for_body();
     let body_cbor =
         crypto::decrypt_body(&dek, &header.nonce_body, ct_body, &aad).map_err(map_crypto_err)?;
+
+    Ok((dek, body_cbor))
+}
+
+// pelna sciezka open (§16): jak wyzej + parsowanie CBOR i mapowanie na rekordy.
+fn decrypt_vault(path: &Path, password: &str) -> Result<Vec<Record>> {
+    let (_dek, body_cbor) = decrypt_vault_dek_and_body(path, password)?;
 
     // 8. sparsuj CBOR. uszkodzone body po udanym deszyfrowaniu nie powinno sie
     // zdarzyc, ale traktujemy je jak korupcje (ten sam komunikat, §14).
@@ -566,5 +636,75 @@ mod tests {
         )
         .unwrap();
         assert!(verify_structure(&bytes).is_ok());
+    }
+
+    // ── changepass (§18): nowe haslo otwiera, stare juz nie ────────────────────
+
+    const NEW_PASSWORD: &str = "nowe haslo glowne super dlugie";
+
+    // pomocnik: przepakuj istniejacy zaszyfrowany vault na nowe haslo,
+    // tak jak robi to changepass() (ten sam DEK + body, nowa sol/nonce'y).
+    fn rewrap_to_new_password(old_bytes: &[u8]) -> Vec<u8> {
+        let (_dir, path) = write_temp(old_bytes);
+        let (dek, body_cbor) = decrypt_vault_dek_and_body(&path, TEST_PASSWORD).unwrap();
+        assemble_vault_bytes(
+            NEW_PASSWORD,
+            &dek,
+            &body_cbor,
+            [13u8; KDF_SALT_LEN],
+            [14u8; NONCE_DEK_LEN],
+            [15u8; NONCE_BODY_LEN],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn changepass_new_password_opens_and_keeps_records() {
+        // po zmianie hasla rekordy (i ich sekrety) sa nienaruszone - DEK ten sam
+        let new_bytes = rewrap_to_new_password(&build_encrypted_vault());
+        let (_dir, path) = write_temp(&new_bytes);
+        let records = decrypt_vault(&path, NEW_PASSWORD).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].title, "github");
+        assert_eq!(
+            view::field_value(&records[0], "password").as_deref(),
+            Some("tajne123")
+        );
+    }
+
+    #[test]
+    fn changepass_old_password_no_longer_opens() {
+        // A6 / S-5: stare haslo nie otwiera juz biezacej wersji pliku
+        let new_bytes = rewrap_to_new_password(&build_encrypted_vault());
+        let (_dir, path) = write_temp(&new_bytes);
+        assert!(matches!(
+            decrypt_vault(&path, TEST_PASSWORD),
+            Err(VaultError::BadPasswordOrCorrupted)
+        ));
+    }
+
+    #[test]
+    fn changepass_changes_salt_and_nonce_body() {
+        // nowa sol (offset 19-34) i nowy nonce_body (offset 132-143) - nie wolno
+        // reuse nonce_body z tym samym DEK. porownujemy naglowki przed i po.
+        let old_bytes = build_encrypted_vault();
+        let new_bytes = rewrap_to_new_password(&old_bytes);
+        assert_ne!(
+            &old_bytes[19..35],
+            &new_bytes[19..35],
+            "sol musi sie zmienic"
+        );
+        assert_ne!(
+            &old_bytes[132..144],
+            &new_bytes[132..144],
+            "nonce_body musi sie zmienic"
+        );
+    }
+
+    #[test]
+    fn changepass_output_passes_structural_verify() {
+        let new_bytes = rewrap_to_new_password(&build_encrypted_vault());
+        assert!(verify_structure(&new_bytes).is_ok());
     }
 }
