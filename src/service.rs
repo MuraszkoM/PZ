@@ -1,5 +1,6 @@
 // vault service - sklejka miedzy CLI a krypto/formatem/storage
 //
+// init: tworzy nowy, pusty vault zaszyfrowany haslem (SPEC §15).
 // open: pelna sciezka kryptograficzna (SPEC §16) - czyta plik, parsuje naglowek,
 // wyprowadza klucze z hasla, sprawdza HMAC, rozpakowuje DEK, deszyfruje body i
 // parsuje CBOR. verify --with-password (§13) idzie ta sama sciezka, tylko bez
@@ -8,15 +9,108 @@
 use crate::clip;
 use crate::crypto;
 use crate::error::{Result, VaultError};
+use crate::format::{KdfParams, VaultBody, VaultHeader};
 use crate::prompt;
 use crate::record::{FieldValue, Record, RecordType};
 use crate::{format, storage, view};
+use rand::RngCore;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroize;
 
-pub fn init(_path: &Path) -> Result<()> {
-    Err(VaultError::NotImplemented("init (SPEC §15)"))
+// vault init <plik> - tworzy nowy, pusty vault zaszyfrowany haslem (SPEC §15).
+pub fn init(path: &Path) -> Result<()> {
+    // nie nadpisujemy istniejacego pliku - to byloby skasowanie cudzego vaulta
+    if path.exists() {
+        return Err(VaultError::InvalidStructure(format!(
+            "plik juz istnieje: {}",
+            path.display()
+        )));
+    }
+
+    let password = prompt::read_secret_confirmed("Nowe haslo glowne").map_err(VaultError::Io)?;
+
+    // losowosc z OS CSPRNG (SPEC §3): sol KDF, DEK i nonce'y
+    let mut kdf_salt = [0u8; format::KDF_SALT_LEN];
+    let mut dek_bytes = [0u8; 32];
+    let mut nonce_dek = [0u8; format::NONCE_DEK_LEN];
+    let mut nonce_body = [0u8; format::NONCE_BODY_LEN];
+    let mut rng = rand::rngs::OsRng;
+    rng.fill_bytes(&mut kdf_salt);
+    rng.fill_bytes(&mut dek_bytes);
+    rng.fill_bytes(&mut nonce_dek);
+    rng.fill_bytes(&mut nonce_body);
+
+    let bytes = build_new_vault_bytes(&password, kdf_salt, dek_bytes, nonce_dek, nonce_body)?;
+    storage::write_vault_file_atomic(path, &bytes).map_err(map_storage_err)?;
+
+    // wyzeruj jawna kopie DEK (klucze pochodne zeroizuja sie same przy Drop, NF-11)
+    dek_bytes.zeroize();
+
+    println!("Utworzono nowy vault: {}", path.display());
+    Ok(())
+}
+
+// rdzen init: buduje bajty nowego, pustego vaulta zaszyfrowanego haslem (§15).
+// wydzielone z init() zeby dalo sie przetestowac bez terminala i bez dysku.
+// sol/DEK/nonce'y wstrzykujemy z zewnatrz -> deterministyczne testy (RNG jest w init()).
+fn build_new_vault_bytes(
+    password: &str,
+    kdf_salt: [u8; format::KDF_SALT_LEN],
+    dek_bytes: [u8; 32],
+    nonce_dek: [u8; format::NONCE_DEK_LEN],
+    nonce_body: [u8; format::NONCE_BODY_LEN],
+) -> Result<Vec<u8>> {
+    let params = KdfParams::default_v1();
+
+    // klucze z hasla
+    let master = crypto::derive_master_key(
+        password.as_bytes(),
+        &kdf_salt,
+        params.memory_kib,
+        params.iterations,
+        params.parallelism as u32,
+    )
+    .map_err(map_crypto_err)?;
+    let keys = crypto::derive_keys(&master).map_err(map_crypto_err)?;
+
+    // opakuj DEK
+    let dek = crypto::Dek::from_bytes(dek_bytes);
+    let wrapped = crypto::wrap_dek(&keys.wrap_key, &nonce_dek, &dek).map_err(map_crypto_err)?;
+
+    // naglowek: najpierw bez maca, policz canonical, potem dolicz header_mac
+    let mut header = VaultHeader {
+        version: format::VERSION,
+        flags: 0,
+        kdf_id: format::KDF_ID_ARGON2ID,
+        kdf_params: params,
+        kdf_salt,
+        aead_id: format::AEAD_ID_CHACHA20_POLY1305,
+        nonce_dek,
+        wrapped_dek: wrapped,
+        header_mac: [0u8; format::HEADER_MAC_LEN],
+        nonce_body,
+    };
+    header.header_mac =
+        crypto::compute_header_mac(&keys.header_mac_key, &header.serialize_canonical());
+
+    // puste body -> canonical CBOR
+    let body = VaultBody {
+        schema_version: 1,
+        records: vec![],
+    };
+    let body_cbor = format::serialize_body(&body).map_err(map_format_err)?;
+
+    // zaszyfruj body; aad = canonical_header || header_mac (§8)
+    let aad = header.aad_for_body();
+    let ct_body =
+        crypto::encrypt_body(&dek, &nonce_body, &body_cbor, &aad).map_err(map_crypto_err)?;
+
+    // sklej plik: pelny naglowek (z mac i nonce_body) || ct_body
+    let mut file = header.serialize_full();
+    file.extend_from_slice(&ct_body);
+    Ok(file)
 }
 
 // vault open <plik> - otwiera vault i deszyfruje rekordy (SPEC §16).
@@ -37,7 +131,7 @@ pub fn add_login() -> Result<()> {
         .map_err(|why| VaultError::InvalidStructure(why.to_string()))?;
     println!("Zbudowano rekord: {}", record.summary());
     Err(VaultError::NotImplemented(
-        "zapis rekordu (czeka na storage + crypto)",
+        "zapis rekordu (czeka na wpiecie sesji open)",
     ))
 }
 
@@ -247,9 +341,8 @@ mod tests {
     use super::*;
     use crate::crypto::Dek;
     use crate::format::{
-        serialize_body, KdfParams, RecordFields, VaultBody, VaultHeader, VaultRecord,
-        AEAD_ID_CHACHA20_POLY1305, HEADER_MAC_LEN, KDF_ID_ARGON2ID, KDF_SALT_LEN, NONCE_BODY_LEN,
-        NONCE_DEK_LEN, VERSION, WRAPPED_DEK_LEN,
+        serialize_body, RecordFields, VaultRecord, AEAD_ID_CHACHA20_POLY1305, HEADER_MAC_LEN,
+        KDF_ID_ARGON2ID, KDF_SALT_LEN, NONCE_BODY_LEN, NONCE_DEK_LEN, VERSION, WRAPPED_DEK_LEN,
     };
     use std::io::Write;
 
@@ -320,7 +413,7 @@ mod tests {
             crypto::derive_master_key(TEST_PASSWORD.as_bytes(), &kdf_salt, 65536, 3, 1).unwrap();
         let keys = crypto::derive_keys(&master).unwrap();
 
-        // losowy DEK (tu staly, zeby test byl deterministyczny) i jego opakowanie
+        // staly DEK, zeby test byl deterministyczny, i jego opakowanie
         let dek = Dek::from_bytes([42u8; 32]);
         let wrapped = crypto::wrap_dek(&keys.wrap_key, &nonce_dek, &dek).unwrap();
 
@@ -425,5 +518,53 @@ mod tests {
         let (_dir, path) = write_temp(&bytes);
         let err = decrypt_vault(&path, TEST_PASSWORD).unwrap_err();
         assert!(matches!(err, VaultError::BadPasswordOrCorrupted));
+    }
+
+    // ── init (§15): nowy vault round-trippuje z open ──────────────────────────
+
+    #[test]
+    fn init_then_open_roundtrip_empty_vault() {
+        // rdzen init buduje pusty vault; po zapisaniu open zwraca 0 rekordow
+        let bytes = build_new_vault_bytes(
+            TEST_PASSWORD,
+            [5u8; KDF_SALT_LEN],
+            [6u8; 32],
+            [7u8; NONCE_DEK_LEN],
+            [8u8; NONCE_BODY_LEN],
+        )
+        .unwrap();
+        let (_dir, path) = write_temp(&bytes);
+        let records = decrypt_vault(&path, TEST_PASSWORD).unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn init_vault_wrong_password_fails_to_open() {
+        let bytes = build_new_vault_bytes(
+            TEST_PASSWORD,
+            [5u8; KDF_SALT_LEN],
+            [6u8; 32],
+            [7u8; NONCE_DEK_LEN],
+            [8u8; NONCE_BODY_LEN],
+        )
+        .unwrap();
+        let (_dir, path) = write_temp(&bytes);
+        assert!(matches!(
+            decrypt_vault(&path, "inne haslo"),
+            Err(VaultError::BadPasswordOrCorrupted)
+        ));
+    }
+
+    #[test]
+    fn init_vault_passes_structural_verify() {
+        let bytes = build_new_vault_bytes(
+            TEST_PASSWORD,
+            [5u8; KDF_SALT_LEN],
+            [6u8; 32],
+            [7u8; NONCE_DEK_LEN],
+            [8u8; NONCE_BODY_LEN],
+        )
+        .unwrap();
+        assert!(verify_structure(&bytes).is_ok());
     }
 }
