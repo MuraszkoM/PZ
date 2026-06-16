@@ -4,9 +4,9 @@
 #[cfg(test)]
 mod adversarial {
     use vault::crypto::{
-        compute_header_mac, decrypt_body, derive_keys, derive_master_key, encrypt_body,
-        unwrap_dek, wrap_dek, Dek, ARGON2_ITERATIONS, ARGON2_MEMORY_KIB, ARGON2_PARALLELISM,
-        KEY_LEN, NONCE_LEN,
+        compute_header_mac, decrypt_body, derive_keys, derive_master_key, encrypt_body, unwrap_dek,
+        wrap_dek, Dek, ARGON2_ITERATIONS, ARGON2_MEMORY_KIB, ARGON2_PARALLELISM, KEY_LEN,
+        NONCE_LEN,
     };
     use vault::format::{
         KdfParams, VaultHeader, AEAD_ID_CHACHA20_POLY1305, HEADER_MAC_LEN, KDF_ID_ARGON2ID,
@@ -21,8 +21,13 @@ mod adversarial {
     // Tworzy poprawny zaszyfrowany plik vault w pamięci
     fn make_vault_bytes() -> Vec<u8> {
         let mk = derive_master_key(
-            PASSWORD, &SALT, ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_PARALLELISM,
-        ).unwrap();
+            PASSWORD,
+            &SALT,
+            ARGON2_MEMORY_KIB,
+            ARGON2_ITERATIONS,
+            ARGON2_PARALLELISM,
+        )
+        .unwrap();
         let keys = derive_keys(&mk).unwrap();
         let dek = Dek::from_bytes([42u8; KEY_LEN]);
         let wrapped_dek = wrap_dek(&keys.wrap_key, &NONCE_DEK, &dek).unwrap();
@@ -74,13 +79,21 @@ mod adversarial {
         // kdf_iterations jest na offsetach 13-16 (big-endian u32)
         file[13] ^= 0xFF;
         let mk = derive_master_key(
-            PASSWORD, &SALT, ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_PARALLELISM,
-        ).unwrap();
+            PASSWORD,
+            &SALT,
+            ARGON2_MEMORY_KIB,
+            ARGON2_ITERATIONS,
+            ARGON2_PARALLELISM,
+        )
+        .unwrap();
         let keys = derive_keys(&mk).unwrap();
         let canonical = &file[..100];
         let stored_mac = &file[100..132];
         let result = vault::crypto::verify_header_mac(&keys.header_mac_key, canonical, stored_mac);
-        assert!(result.is_err(), "A2: zmieniony nagłówek powinien dać błąd HMAC");
+        assert!(
+            result.is_err(),
+            "A2: zmieniony nagłówek powinien dać błąd HMAC"
+        );
     }
 
     // A3 — Podmiana aead_id (offset 35)
@@ -89,13 +102,21 @@ mod adversarial {
         let mut file = make_vault_bytes();
         file[35] = 0x63; // zmiana aead_id na 99
         let mk = derive_master_key(
-            PASSWORD, &SALT, ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_PARALLELISM,
-        ).unwrap();
+            PASSWORD,
+            &SALT,
+            ARGON2_MEMORY_KIB,
+            ARGON2_ITERATIONS,
+            ARGON2_PARALLELISM,
+        )
+        .unwrap();
         let keys = derive_keys(&mk).unwrap();
         let canonical = &file[..100];
         let stored_mac = &file[100..132];
         let result = vault::crypto::verify_header_mac(&keys.header_mac_key, canonical, stored_mac);
-        assert!(result.is_err(), "A3: zmieniony aead_id powinien dać błąd HMAC");
+        assert!(
+            result.is_err(),
+            "A3: zmieniony aead_id powinien dać błąd HMAC"
+        );
     }
 
     // A4 — Podmiana wrapped DEK (offsety 52-99)
@@ -106,13 +127,21 @@ mod adversarial {
             *b = 0xAB;
         }
         let mk = derive_master_key(
-            PASSWORD, &SALT, ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_PARALLELISM,
-        ).unwrap();
+            PASSWORD,
+            &SALT,
+            ARGON2_MEMORY_KIB,
+            ARGON2_ITERATIONS,
+            ARGON2_PARALLELISM,
+        )
+        .unwrap();
         let keys = derive_keys(&mk).unwrap();
         let canonical = &file[..100];
         let stored_mac = &file[100..132];
         let result = vault::crypto::verify_header_mac(&keys.header_mac_key, canonical, stored_mac);
-        assert!(result.is_err(), "A4: podmieniony wrapped_dek powinien dać błąd HMAC");
+        assert!(
+            result.is_err(),
+            "A4: podmieniony wrapped_dek powinien dać błąd HMAC"
+        );
     }
 
     // A5 — Brute force cost
@@ -120,16 +149,22 @@ mod adversarial {
     fn a5_brute_force_cost() {
         let start = std::time::Instant::now();
         derive_master_key(
-            b"password123", &SALT, ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_PARALLELISM,
-        ).unwrap();
+            b"password123",
+            &SALT,
+            ARGON2_MEMORY_KIB,
+            ARGON2_ITERATIONS,
+            ARGON2_PARALLELISM,
+        )
+        .unwrap();
         let elapsed = start.elapsed();
         assert!(
             elapsed.as_millis() >= 100,
             "A5: Argon2id powinien trwać >= 100ms, było {}ms",
             elapsed.as_millis()
         );
-        println!("A5: Argon2id zajął {}ms — ~{:.2} prób/s", 
-            elapsed.as_millis(), 
+        println!(
+            "A5: Argon2id zajął {}ms — ~{:.2} prób/s",
+            elapsed.as_millis(),
             1000.0 / elapsed.as_millis() as f64
         );
     }
@@ -140,12 +175,20 @@ mod adversarial {
         let file = make_vault_bytes();
         // Próba otwarcia z innym hasłem — inny master_key → inny wrap_key → błąd
         let mk_wrong = derive_master_key(
-            b"stare_haslo", &SALT, ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_PARALLELISM,
-        ).unwrap();
+            b"stare_haslo",
+            &SALT,
+            ARGON2_MEMORY_KIB,
+            ARGON2_ITERATIONS,
+            ARGON2_PARALLELISM,
+        )
+        .unwrap();
         let keys_wrong = derive_keys(&mk_wrong).unwrap();
         let wrapped_dek: [u8; WRAPPED_DEK_LEN] = file[52..100].try_into().unwrap();
         let result = unwrap_dek(&keys_wrong.wrap_key, &NONCE_DEK, &wrapped_dek);
-        assert!(result.is_err(), "A6: stare hasło nie powinno otworzyć vault po changepass");
+        assert!(
+            result.is_err(),
+            "A6: stare hasło nie powinno otworzyć vault po changepass"
+        );
     }
 
     // A7 — Truncation pliku

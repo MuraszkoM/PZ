@@ -204,10 +204,10 @@ pub fn compute_header_mac(
     header_mac_key: &HeaderMacKey,
     canonical_header: &[u8],
 ) -> [u8; HMAC_LEN] {
-    let mut mac =
-<Hmac<Sha256> as KeyInit>::new_from_slice(&header_mac_key.0)
-            .expect("HMAC akceptuje każdy rozmiar klucza");
-    mac.update(canonical_header);    let result = mac.finalize().into_bytes();
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&header_mac_key.0)
+        .expect("HMAC akceptuje każdy rozmiar klucza");
+    mac.update(canonical_header);
+    let result = mac.finalize().into_bytes();
     result.into()
 }
 
@@ -220,9 +220,9 @@ pub fn verify_header_mac(
     canonical_header: &[u8],
     expected_mac: &[u8],
 ) -> Result<(), CryptoError> {
-    let mut mac =
-<Hmac<Sha256> as KeyInit>::new_from_slice(&header_mac_key.0)
-            .expect("HMAC akceptuje każdy rozmiar klucza");    mac.update(canonical_header);
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&header_mac_key.0)
+        .expect("HMAC akceptuje każdy rozmiar klucza");
+    mac.update(canonical_header);
     mac.verify_slice(expected_mac)
         .map_err(|_| CryptoError::HmacMismatch)
 }
@@ -244,8 +244,8 @@ pub fn wrap_dek(
     nonce_dek: &[u8; NONCE_LEN],
     dek: &Dek,
 ) -> Result<[u8; WRAPPED_DEK_LEN], CryptoError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(&wrap_key.0)
-        .map_err(|_| CryptoError::AeadEncryptError)?;
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&wrap_key.0).map_err(|_| CryptoError::AeadEncryptError)?;
 
     let nonce = Nonce::from_slice(nonce_dek);
     let aad: Vec<u8> = [CONTEXT, b"wrap-dek"].concat();
@@ -274,8 +274,8 @@ pub fn unwrap_dek(
     nonce_dek: &[u8; NONCE_LEN],
     wrapped_dek: &[u8; WRAPPED_DEK_LEN],
 ) -> Result<Dek, CryptoError> {
-    let cipher = ChaCha20Poly1305::new_from_slice(&wrap_key.0)
-        .map_err(|_| CryptoError::AeadDecryptError)?;
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&wrap_key.0).map_err(|_| CryptoError::AeadDecryptError)?;
 
     let nonce = Nonce::from_slice(nonce_dek);
     let aad: Vec<u8> = [CONTEXT, b"wrap-dek"].concat();

@@ -1,6 +1,7 @@
 // moduly projektu
 pub mod cli;
 pub mod clip;
+pub mod crypto;
 pub mod error;
 pub mod format;
 pub mod prompt;
@@ -8,4 +9,3 @@ pub mod record;
 pub mod service;
 pub mod storage;
 pub mod view;
-pub mod crypto;
