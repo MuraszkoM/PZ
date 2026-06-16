@@ -49,8 +49,10 @@ pub enum Command {
         #[arg(long, requires = "field")]
         clip: bool,
     },
-    // zmien haslo glowne (SPEC §18)
-    Changepass,
+    // zmien haslo glowne (SPEC §18). operuje na konkretnym pliku - jak open/verify.
+    Changepass {
+        path: PathBuf,
+    },
     // sprawdz plik (SPEC §12 / §13)
     Verify {
         path: PathBuf,
@@ -93,7 +95,7 @@ fn dispatch(command: Command) -> Result<(), VaultError> {
             field,
             clip,
         } => service::get(&id_or_name, field.as_deref(), clip),
-        Command::Changepass => service::changepass(),
+        Command::Changepass { path } => service::changepass(&path),
         Command::Verify {
             path,
             with_password,
@@ -205,6 +207,18 @@ mod tests {
             }
             _ => panic!("mialo byc Get"),
         }
+    }
+
+    #[test]
+    fn parses_changepass_with_path() {
+        let cli = Cli::try_parse_from(["vault", "changepass", "moje.vlt"]).unwrap();
+        assert!(matches!(cli.command, Command::Changepass { .. }));
+    }
+
+    #[test]
+    fn changepass_requires_path() {
+        // changepass bez sciezki ma byc odrzucone (jak init/open/verify)
+        assert!(Cli::try_parse_from(["vault", "changepass"]).is_err());
     }
 
     #[test]
