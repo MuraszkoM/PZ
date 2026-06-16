@@ -3,7 +3,7 @@
 // wazne wymogi ze specyfikacji:
 //  - F-19: sekrety NIE ida w argumentach komendy, tylko interaktywnie bez echa
 //  - F-15: haslo nigdy nie jest logowane
-// haslo czytamy przez rpassword (nie widac go na ekranie), dwa razy dla pewnosci.
+// haslo czytamy przez rpassword (nie widac go na ekranie).
 
 use crate::record::LoginInput;
 use std::io::{self, BufRead, Write};
@@ -20,6 +20,13 @@ pub fn read_line<R: BufRead, W: Write>(
     let mut buf = String::new();
     reader.read_line(&mut buf)?;
     Ok(buf.trim_end_matches(['\n', '\r']).to_string())
+}
+
+// pojedyncze haslo bez echa (np. przy `open` / `verify --with-password`).
+// przy otwieraniu pytamy tylko raz, bez potwierdzania.
+// rpassword sam obcina znak konca linii, wiec nie trzeba trimowac.
+pub fn read_secret(label: &str) -> io::Result<String> {
+    rpassword::prompt_password(format!("{label}: "))
 }
 
 // haslo bez echa, pytane dwa razy. jak sie nie zgadzaja -> blad.
