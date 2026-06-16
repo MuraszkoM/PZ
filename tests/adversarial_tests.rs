@@ -6,7 +6,6 @@ mod adversarial {
     use vault::crypto::{
         compute_header_mac, decrypt_body, derive_keys, derive_master_key, encrypt_body, unwrap_dek,
         wrap_dek, Dek, ARGON2_ITERATIONS, ARGON2_MEMORY_KIB, ARGON2_PARALLELISM, KEY_LEN,
-        NONCE_LEN,
     };
     use vault::format::{
         KdfParams, VaultHeader, AEAD_ID_CHACHA20_POLY1305, HEADER_MAC_LEN, KDF_ID_ARGON2ID,
