@@ -70,3 +70,76 @@ impl From<std::io::Error> for VaultError {
 
 // skrot zeby nie pisac calego Result<T, VaultError> wszedzie
 pub type Result<T> = std::result::Result<T, VaultError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+    use std::io;
+
+    // ── Display: kazdy wariant ma swoj komunikat ──────────────────────────────
+
+    #[test]
+    fn display_bad_password_is_the_one_message() {
+        // ADR-005 / §14: jeden ogolny komunikat, bez oracle'a
+        assert_eq!(
+            VaultError::BadPasswordOrCorrupted.to_string(),
+            ERR_BAD_PASSWORD_OR_CORRUPTED
+        );
+    }
+
+    #[test]
+    fn display_invalid_structure_carries_reason() {
+        let e = VaultError::InvalidStructure("zly magic".to_string());
+        let s = e.to_string();
+        assert!(s.contains("ERR_INVALID_STRUCTURE"));
+        assert!(s.contains("zly magic"));
+    }
+
+    #[test]
+    fn display_io_has_prefix() {
+        let e = VaultError::Io(io::Error::other("boom"));
+        assert!(e.to_string().contains("ERR_IO"));
+    }
+
+    #[test]
+    fn display_not_implemented_carries_what() {
+        let e = VaultError::NotImplemented("changepass");
+        let s = e.to_string();
+        assert!(s.contains("ERR_NOT_IMPLEMENTED"));
+        assert!(s.contains("changepass"));
+    }
+
+    // ── exit_code: stabilne kody wyjscia ──────────────────────────────────────
+
+    #[test]
+    fn exit_codes_are_stable() {
+        assert_eq!(VaultError::BadPasswordOrCorrupted.exit_code(), 2);
+        assert_eq!(VaultError::InvalidStructure(String::new()).exit_code(), 3);
+        assert_eq!(VaultError::Io(io::Error::other("x")).exit_code(), 4);
+        assert_eq!(VaultError::NotImplemented("x").exit_code(), 64);
+    }
+
+    // ── From<io::Error> ───────────────────────────────────────────────────────
+
+    #[test]
+    fn from_io_error_maps_to_io_variant() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "nie ma pliku");
+        let e: VaultError = io_err.into();
+        assert!(matches!(e, VaultError::Io(_)));
+    }
+
+    // ── source(): tylko Io ma zrodlo ──────────────────────────────────────────
+
+    #[test]
+    fn source_present_only_for_io() {
+        let io_e = VaultError::Io(io::Error::other("x"));
+        assert!(io_e.source().is_some());
+
+        assert!(VaultError::BadPasswordOrCorrupted.source().is_none());
+        assert!(VaultError::InvalidStructure(String::new())
+            .source()
+            .is_none());
+        assert!(VaultError::NotImplemented("x").source().is_none());
+    }
+}

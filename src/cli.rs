@@ -259,4 +259,26 @@ mod tests {
     fn unknown_command_is_rejected() {
         assert!(Cli::try_parse_from(["vault", "frobnicate"]).is_err());
     }
+
+    // ── dispatch: ramiona routingu, ktore nie pytaja o haslo ──────────────────
+    // verify (bez hasla) i init (gdy plik istnieje) wracaja bledem zanim cokolwiek
+    // zapytaja - dzieki temu dispatch da sie tu przetestowac bez terminala.
+
+    #[test]
+    fn dispatch_verify_missing_file_returns_err() {
+        let cmd = Command::Verify {
+            path: PathBuf::from("na-pewno-nie-istnieje-9a8b7c.vlt"),
+            with_password: false,
+        };
+        assert!(dispatch(cmd).is_err());
+    }
+
+    #[test]
+    fn dispatch_init_existing_file_returns_err() {
+        // init nie nadpisuje istniejacego pliku -> blad przed promptem
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exists.vlt");
+        std::fs::write(&path, b"x").unwrap();
+        assert!(dispatch(Command::Init { path }).is_err());
+    }
 }
