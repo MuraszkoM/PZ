@@ -310,4 +310,17 @@ mod tests {
 
         assert_eq!(read_back, data);
     }
+    #[test]
+    fn write_rejects_actually_oversized_data() {
+        let err = StorageError::FileTooLarge(200 * 1024 * 1024);
+        let msg = format!("{}", err);
+        assert!(msg.contains("100 MiB") || msg.contains("209715200"));
+    }
+
+    #[test]
+    fn file_not_found_error_display() {
+        let err = StorageError::FileNotFound(std::path::PathBuf::from("/nie/istnieje"));
+        let msg = format!("{}", err);
+        assert!(msg.contains("nie/istnieje") || msg.contains("nie istnieje"));
+    }
 }

@@ -142,4 +142,12 @@ mod tests {
             .is_none());
         assert!(VaultError::NotImplemented("x").source().is_none());
     }
+    #[test]
+    fn debug_format_works() {
+        let e = VaultError::BadPasswordOrCorrupted;
+        assert!(!format!("{:?}", e).is_empty());
+
+        let e2 = VaultError::InvalidStructure("test".to_string());
+        assert!(format!("{:?}", e2).contains("InvalidStructure"));
+    }
 }
