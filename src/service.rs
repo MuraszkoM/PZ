@@ -48,8 +48,7 @@ pub fn init(path: &Path) -> Result<()> {
     rng.fill_bytes(&mut nonce_dek);
     rng.fill_bytes(&mut nonce_body);
 
-    let bytes = build_new_vault_bytes(&password, kdf_salt, dek_bytes, nonce_dek, nonce_body)?;
-    storage::write_vault_file_atomic(path, &bytes).map_err(map_storage_err)?;
+    create_vault(path, &password, kdf_salt, dek_bytes, nonce_dek, nonce_body)?;
 
     // wyzeruj jawna kopie DEK (klucze pochodne zeroizuja sie same przy Drop, NF-11)
     dek_bytes.zeroize();
@@ -79,6 +78,21 @@ fn build_new_vault_bytes(
 
     // dalej leci wspolny zlozyciel pliku (ten sam co changepass)
     assemble_vault_bytes(password, &dek, &body_cbor, kdf_salt, nonce_dek, nonce_body)
+}
+
+// rdzen init bez I/O po terminalu: zbuduj bajty nowego vaulta i zapisz atomowo.
+// wydzielone z init() (prompt + RNG zostaja w init) zeby przetestowac sciezke
+// zapisu nowego vaulta bez pytania o haslo. sol/DEK/nonce'y wstrzykiwane -> determinizm.
+fn create_vault(
+    path: &Path,
+    password: &str,
+    kdf_salt: [u8; format::KDF_SALT_LEN],
+    dek_bytes: [u8; 32],
+    nonce_dek: [u8; format::NONCE_DEK_LEN],
+    nonce_body: [u8; format::NONCE_BODY_LEN],
+) -> Result<()> {
+    let bytes = build_new_vault_bytes(password, kdf_salt, dek_bytes, nonce_dek, nonce_body)?;
+    storage::write_vault_file_atomic(path, &bytes).map_err(map_storage_err)
 }
 
 // wspolny zlozyciel pliku vault: z hasla + DEK + gotowego body_cbor buduje pelne
@@ -134,6 +148,30 @@ fn assemble_vault_bytes(
     let mut file = header.serialize_full();
     file.extend_from_slice(&ct_body);
     Ok(file)
+}
+
+// ogon changepass bez I/O po terminalu: majac juz DEK, body i NOWE haslo - sklej
+// przerobiony plik i zapisz atomowo (§18.5-8 / §19). decrypt starym haslem ZOSTAJE
+// w changepass (weryfikujemy dostep zanim spytamy o nowe haslo), dlatego tu
+// dostajemy gotowy DEK + body. wydzielone, zeby te sciezke przetestowac bez promptu.
+fn write_with_new_password(
+    path: &Path,
+    new_password: &str,
+    dek: &crypto::Dek,
+    body_cbor: &[u8],
+    kdf_salt: [u8; format::KDF_SALT_LEN],
+    nonce_dek: [u8; format::NONCE_DEK_LEN],
+    nonce_body: [u8; format::NONCE_BODY_LEN],
+) -> Result<()> {
+    let bytes = assemble_vault_bytes(
+        new_password,
+        dek,
+        body_cbor,
+        kdf_salt,
+        nonce_dek,
+        nonce_body,
+    )?;
+    storage::write_vault_file_atomic(path, &bytes).map_err(map_storage_err)
 }
 
 // vault open <plik> - otwiera vault i wypisuje podsumowanie (SPEC §16).
@@ -193,27 +231,54 @@ fn list_output(records: &[Record], type_filter: Option<&str>, tag_filter: Option
 pub fn get(path: &Path, id_or_name: &str, field: Option<&str>, clip: bool) -> Result<()> {
     let password = prompt::read_secret("Haslo glowne").map_err(VaultError::Io)?;
     let records = decrypt_vault(path, &password)?;
-    let record = find_record(&records, id_or_name)?;
+    match build_get_output(&records, id_or_name, field, clip)? {
+        GetOutput::Detail(text) | GetOutput::Field(text) => println!("{text}"),
+        GetOutput::Clip { field, value } => {
+            // sekretu NIE wypisujemy na ekran - tylko kopiujemy i info
+            clip::copy_to_clipboard(&value).map_err(VaultError::InvalidStructure)?;
+            println!(
+                "Skopiowano pole '{field}' do schowka. Wyczyszcze za {} s (Ctrl-C przerywa).",
+                clip::CLIPBOARD_CLEAR_SECS
+            );
+        }
+    }
+    Ok(())
+}
+
+// wynik logiki `get` zanim cokolwiek wypiszemy / dotkniemy schowka. dzieki temu
+// sama decyzja (ktory rekord, ktore pole, czy do schowka) jest testowalna bez
+// terminala i bez prawdziwego schowka.
+enum GetOutput {
+    Detail(String),                        // pelny rekord do wypisania
+    Field(String),                         // surowa wartosc jednego pola
+    Clip { field: String, value: String }, // skopiuj wartosc pola (F-04/F-18)
+}
+
+// czysta logika `get` (F-04): znajdz rekord i zdecyduj co pokazac/skopiowac.
+// bez I/O - get() tylko wykonuje te decyzje (println / schowek).
+fn build_get_output(
+    records: &[Record],
+    id_or_name: &str,
+    field: Option<&str>,
+    clip: bool,
+) -> Result<GetOutput> {
+    let record = find_record(records, id_or_name)?;
 
     // --clip kopiuje WYBRANE pole, wiec bez --field nie wiadomo co kopiowac
     if clip {
         let name = field
             .ok_or_else(|| VaultError::InvalidStructure("--clip wymaga --field".to_string()))?;
         let value = field_or_err(record, name)?;
-        // sekretu NIE wypisujemy na ekran - tylko info
-        clip::copy_to_clipboard(&value).map_err(VaultError::InvalidStructure)?;
-        println!(
-            "Skopiowano pole '{name}' do schowka. Wyczyszcze za {} s (Ctrl-C przerywa).",
-            clip::CLIPBOARD_CLEAR_SECS
-        );
-        return Ok(());
+        return Ok(GetOutput::Clip {
+            field: name.to_string(),
+            value,
+        });
     }
 
     match field {
-        Some(name) => println!("{}", field_or_err(record, name)?),
-        None => println!("{}", view::format_detail(record)),
+        Some(name) => Ok(GetOutput::Field(field_or_err(record, name)?)),
+        None => Ok(GetOutput::Detail(view::format_detail(record))),
     }
-    Ok(())
 }
 
 // znajdz rekord po id/nazwie albo zwroc kontrolowany blad (F-04).
@@ -256,9 +321,10 @@ pub fn changepass(path: &Path) -> Result<()> {
     rng.fill_bytes(&mut nonce_dek);
     rng.fill_bytes(&mut nonce_body);
 
-    // 4 + 5 + 7. ten sam DEK, nowe klucze z nowego hasla, body przeszyfrowane
-    // (nowy AAD bo zmienil sie naglowek). cala robota w assemble_vault_bytes.
-    let bytes = assemble_vault_bytes(
+    // 4 + 5 + 7 + 8. ten sam DEK, nowe klucze z nowego hasla, body przeszyfrowane
+    // (nowy AAD bo zmienil sie naglowek) i atomowy zapis (§19) - w write_with_new_password.
+    write_with_new_password(
+        path,
         &new_password,
         &dek,
         &body_cbor,
@@ -266,9 +332,6 @@ pub fn changepass(path: &Path) -> Result<()> {
         nonce_dek,
         nonce_body,
     )?;
-
-    // 8. zapis atomowy - albo stara, albo nowa wersja, nigdy "w polowie" (§19)
-    storage::write_vault_file_atomic(path, &bytes).map_err(map_storage_err)?;
 
     // wyzeruj jawne body (zawiera sekrety); DEK zeroizuje sie sam przy Drop (NF-11)
     body_cbor.zeroize();
@@ -772,14 +835,36 @@ mod tests {
         assert!(verify(&path, false).is_err());
     }
 
+    // ── init core (§15): create_vault zapisuje otwieralny plik ─────────────────
+
+    #[test]
+    fn create_vault_writes_openable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nowy.vlt");
+        create_vault(
+            &path,
+            TEST_PASSWORD,
+            [5u8; KDF_SALT_LEN],
+            [6u8; 32],
+            [7u8; NONCE_DEK_LEN],
+            [8u8; NONCE_BODY_LEN],
+        )
+        .unwrap();
+        assert!(path.exists());
+        // swiezy vault otwiera sie i jest pusty
+        assert!(decrypt_vault(&path, TEST_PASSWORD).unwrap().is_empty());
+    }
+
     // ── changepass (§18): nowe haslo otwiera, stare juz nie ────────────────────
 
     const NEW_PASSWORD: &str = "nowe haslo glowne super dlugie";
 
-    fn rewrap_to_new_password(old_bytes: &[u8]) -> Vec<u8> {
-        let (_dir, path) = write_temp(old_bytes);
-        let (_h, dek, body_cbor) = decrypt_to_body_cbor(&path, TEST_PASSWORD).unwrap();
-        assemble_vault_bytes(
+    // przerabia plik vault w miejscu na NEW_PASSWORD - tak jak robi to changepass
+    // po wpisaniu obu hasel (decrypt starym -> write_with_new_password nowym).
+    fn changepass_in_place(path: &std::path::Path) {
+        let (_h, dek, body_cbor) = decrypt_to_body_cbor(path, TEST_PASSWORD).unwrap();
+        write_with_new_password(
+            path,
             NEW_PASSWORD,
             &dek,
             &body_cbor,
@@ -787,13 +872,13 @@ mod tests {
             [14u8; NONCE_DEK_LEN],
             [15u8; NONCE_BODY_LEN],
         )
-        .unwrap()
+        .unwrap();
     }
 
     #[test]
     fn changepass_new_password_opens_and_keeps_records() {
-        let new_bytes = rewrap_to_new_password(&build_encrypted_vault());
-        let (_dir, path) = write_temp(&new_bytes);
+        let (_dir, path) = write_temp(&build_encrypted_vault());
+        changepass_in_place(&path);
         let records = decrypt_vault(&path, NEW_PASSWORD).unwrap();
 
         assert_eq!(records.len(), 1);
@@ -807,8 +892,8 @@ mod tests {
     #[test]
     fn changepass_old_password_no_longer_opens() {
         // A6 / S-5: stare haslo nie otwiera juz biezacej wersji pliku
-        let new_bytes = rewrap_to_new_password(&build_encrypted_vault());
-        let (_dir, path) = write_temp(&new_bytes);
+        let (_dir, path) = write_temp(&build_encrypted_vault());
+        changepass_in_place(&path);
         assert!(matches!(
             decrypt_vault(&path, TEST_PASSWORD),
             Err(VaultError::BadPasswordOrCorrupted)
@@ -817,8 +902,10 @@ mod tests {
 
     #[test]
     fn changepass_output_passes_structural_verify() {
-        let new_bytes = rewrap_to_new_password(&build_encrypted_vault());
-        assert!(verify_structure(&new_bytes).is_ok());
+        let (_dir, path) = write_temp(&build_encrypted_vault());
+        changepass_in_place(&path);
+        let after = std::fs::read(&path).unwrap();
+        assert!(verify_structure(&after).is_ok());
     }
 
     // ── zapis po modyfikacji (§17) + add (F-05) ───────────────────────────────
@@ -984,5 +1071,73 @@ mod tests {
             field_or_err(rec, "nieistnieje"),
             Err(VaultError::InvalidStructure(_))
         ));
+    }
+
+    // ── build_get_output: decyzja get() bez I/O i bez schowka ─────────────────
+
+    #[test]
+    fn get_output_detail_without_field() {
+        let recs = sample_records();
+        match build_get_output(&recs, "github", None, false).unwrap() {
+            GetOutput::Detail(s) => {
+                assert!(s.contains("github"));
+                assert!(s.contains("czarny"));
+            }
+            _ => panic!("mialo byc Detail"),
+        }
+    }
+
+    #[test]
+    fn get_output_field_returns_raw_value() {
+        let recs = sample_records();
+        match build_get_output(&recs, "github", Some("password"), false).unwrap() {
+            GetOutput::Field(v) => assert_eq!(v, "tajne123"),
+            _ => panic!("mialo byc Field"),
+        }
+    }
+
+    #[test]
+    fn get_output_clip_carries_field_and_value() {
+        let recs = sample_records();
+        match build_get_output(&recs, "github", Some("password"), true).unwrap() {
+            GetOutput::Clip { field, value } => {
+                assert_eq!(field, "password");
+                assert_eq!(value, "tajne123");
+            }
+            _ => panic!("mialo byc Clip"),
+        }
+    }
+
+    #[test]
+    fn get_output_clip_without_field_errors() {
+        let recs = sample_records();
+        assert!(matches!(
+            build_get_output(&recs, "github", None, true),
+            Err(VaultError::InvalidStructure(_))
+        ));
+    }
+
+    #[test]
+    fn get_output_missing_record_errors() {
+        let recs = sample_records();
+        assert!(matches!(
+            build_get_output(&recs, "nie_ma", None, false),
+            Err(VaultError::InvalidStructure(_))
+        ));
+    }
+
+    #[test]
+    fn get_output_missing_field_errors() {
+        let recs = sample_records();
+        assert!(matches!(
+            build_get_output(&recs, "github", Some("nieistnieje"), false),
+            Err(VaultError::InvalidStructure(_))
+        ));
+    }
+
+    #[test]
+    fn now_nanos_is_nonzero() {
+        // czas od epoki jest dodatni (chyba ze zegar systemowy jest sprzed 1970)
+        assert!(now_nanos() > 0);
     }
 }
