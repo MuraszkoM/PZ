@@ -29,13 +29,20 @@ pub fn read_secret(label: &str) -> io::Result<String> {
     rpassword::prompt_password(format!("{label}: "))
 }
 
+// czy dwa wpisane hasla sa identyczne. wydzielone z read_secret_confirmed, zeby
+// te logike (jedyna nietrywialna czesc) dalo sie przetestowac bez terminala -
+// same wywolania rpassword wymagaja TTY i nie sa testowane jednostkowo.
+fn passwords_match(first: &str, second: &str) -> bool {
+    first == second
+}
+
 // haslo bez echa, pytane dwa razy. jak sie nie zgadzaja -> blad.
-// tego nie da sie sensownie odpalic w tescie (potrzebny prawdziwy terminal),
-// wiec logika jest cienka i polega na sprawdzonej bibliotece rpassword.
+// czytanie polega na sprawdzonej bibliotece rpassword (TTY); porownanie idzie
+// przez passwords_match (testowane).
 pub fn read_secret_confirmed(label: &str) -> io::Result<String> {
     let first = rpassword::prompt_password(format!("{label}: "))?;
     let second = rpassword::prompt_password(format!("{label} (powtorz): "))?;
-    if first != second {
+    if !passwords_match(&first, &second) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "hasla sie nie zgadzaja",
@@ -103,5 +110,16 @@ mod tests {
         let mut output = Vec::new();
         let got = read_line("x", &mut input, &mut output).unwrap();
         assert_eq!(got, "abc");
+    }
+
+    #[test]
+    fn passwords_match_accepts_identical() {
+        assert!(passwords_match("tajne123", "tajne123"));
+    }
+
+    #[test]
+    fn passwords_match_rejects_different() {
+        assert!(!passwords_match("tajne123", "tajne124"));
+        assert!(!passwords_match("haslo", ""));
     }
 }
