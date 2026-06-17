@@ -104,3 +104,18 @@ NF-09   Brak hard-coded sekretów w kodzie i testach                            
 NF-10   Wszystkie zewnętrzne zależności na białej liście i przypięte do wersji     Audytowalność
 NF-11   Zerowanie kluczy w pamięci za pomocą zeroize (Rust)                        Bezpieczeństwo
 NF-12   Dokumentacja użytkownika i operatora w języku polskim, konsekwentnie       Czytelność
+
+Wyniki testów adwersarialnych (M8)
+
+Wszystkie 9 testów adwersarialnych przechodzi zielono w CI.
+
+ID   Wynik   Plik testu
+A1   PASS    tests/adversarial_tests.rs::adversarial::a1_modified_body_byte
+A2   PASS    tests/adversarial_tests.rs::adversarial::a2_modified_kdf_iterations
+A3   PASS    tests/adversarial_tests.rs::adversarial::a3_modified_aead_id
+A4   PASS    tests/adversarial_tests.rs::adversarial::a4_replaced_wrapped_dek
+A5   PASS    tests/adversarial_tests.rs::adversarial::a5_brute_force_cost
+A6   PASS    tests/adversarial_tests.rs::adversarial::a6_old_password_after_changepass
+A7   PASS    tests/adversarial_tests.rs::adversarial::a7_truncated_file
+A8   PASS    tests/adversarial_tests.rs::adversarial::a8_empty_file
+A8   PASS    tests/adversarial_tests.rs::adversarial::a8_wrong_magic
