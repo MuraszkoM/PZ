@@ -325,7 +325,7 @@ mod tests {
         assert!(msg.contains("100 MiB") || msg.contains("209715200"));
     }
 
-    #[test]  
+    #[test]
     fn file_not_found_error_display() {
         let err = StorageError::FileNotFound(std::path::PathBuf::from("/nie/istnieje"));
         let msg = format!("{}", err);
