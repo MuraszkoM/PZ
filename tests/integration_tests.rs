@@ -117,7 +117,13 @@ mod integration {
     #[test]
     fn e2e_2_hundred_records() {
         let records: Vec<VaultRecord> = (0..100)
-            .map(|i| login_record(&format!("serwis{i}"), &format!("user{i}"), &format!("pass{i}")))
+            .map(|i| {
+                login_record(
+                    &format!("serwis{i}"),
+                    &format!("user{i}"),
+                    &format!("pass{i}"),
+                )
+            })
             .collect();
 
         let bytes = build_vault(records);
