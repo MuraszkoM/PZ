@@ -45,3 +45,46 @@ jobs:
 
       - name: Audit dependencies
         run: cargo audit
+
+  coverage:
+    name: Test coverage (tarpaulin)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Run tarpaulin
+        run: cargo tarpaulin --all-features --fail-under 68 --out Xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: cobertura.xml
+
+  fuzz-smoke:
+    name: Fuzz smoke (60s)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz header parser (60s)
+        run: cargo fuzz run header_parser -- -max_total_time=60
+
+      - name: Fuzz body parser (60s)
+        run: cargo fuzz run body_parser -- -max_total_time=60
