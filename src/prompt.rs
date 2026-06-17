@@ -122,4 +122,30 @@ mod tests {
         assert!(!passwords_match("tajne123", "tajne124"));
         assert!(!passwords_match("haslo", ""));
     }
+    #[test]
+    fn collect_login_parses_fields() {
+        // symulujemy input: tytul, url, login, tagi, notatki
+        // haslo czytamy przez rpassword (TTY) - nie testujemy tu
+        let mut input = Cursor::new(
+            b"github\nhttps://github.com\nuser1\ntag1, tag2\nnotatka testowa\n".to_vec(),
+        );
+        let mut out = Vec::new();
+        let title = read_line("", &mut input, &mut out).unwrap();
+        let url = read_line("", &mut input, &mut out).unwrap();
+        let username = read_line("", &mut input, &mut out).unwrap();
+        let tags_raw = read_line("", &mut input, &mut out).unwrap();
+        let notes = read_line("", &mut input, &mut out).unwrap();
+
+        assert_eq!(title, "github");
+        assert_eq!(url, "https://github.com");
+        assert_eq!(username, "user1");
+        assert_eq!(notes, "notatka testowa");
+
+        let tags: Vec<String> = tags_raw
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(tags, vec!["tag1", "tag2"]);
+    }
 }
