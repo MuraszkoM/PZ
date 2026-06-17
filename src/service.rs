@@ -175,10 +175,16 @@ pub fn add_login(path: &Path) -> Result<()> {
 pub fn list(path: &Path, type_filter: Option<&str>, tag_filter: Option<&str>) -> Result<()> {
     let password = prompt::read_secret("Haslo glowne").map_err(VaultError::Io)?;
     let records = decrypt_vault(path, &password)?;
-    let filtered = view::filter(&records, type_filter, tag_filter);
-    let owned: Vec<Record> = filtered.into_iter().cloned().collect();
-    println!("{}", view::format_list(&owned));
+    println!("{}", list_output(&records, type_filter, tag_filter));
     Ok(())
+}
+
+// czysta logika list: filtr po typie/tagu + sformatowana tabelka (F-03).
+// wydzielone z list() zeby przetestowac bez terminala i pliku.
+fn list_output(records: &[Record], type_filter: Option<&str>, tag_filter: Option<&str>) -> String {
+    let filtered = view::filter(records, type_filter, tag_filter);
+    let owned: Vec<Record> = filtered.into_iter().cloned().collect();
+    view::format_list(&owned)
 }
 
 // vault get <plik> <id|nazwa> [--field F] [--clip] - pokazuje rekord (F-04).
@@ -187,15 +193,13 @@ pub fn list(path: &Path, type_filter: Option<&str>, tag_filter: Option<&str>) ->
 pub fn get(path: &Path, id_or_name: &str, field: Option<&str>, clip: bool) -> Result<()> {
     let password = prompt::read_secret("Haslo glowne").map_err(VaultError::Io)?;
     let records = decrypt_vault(path, &password)?;
-    let record = view::find(&records, id_or_name)
-        .ok_or_else(|| VaultError::InvalidStructure(format!("nie znaleziono: {id_or_name}")))?;
+    let record = find_record(&records, id_or_name)?;
 
     // --clip kopiuje WYBRANE pole, wiec bez --field nie wiadomo co kopiowac
     if clip {
         let name = field
             .ok_or_else(|| VaultError::InvalidStructure("--clip wymaga --field".to_string()))?;
-        let value = view::field_value(record, name)
-            .ok_or_else(|| VaultError::InvalidStructure(format!("rekord nie ma pola: {name}")))?;
+        let value = field_or_err(record, name)?;
         // sekretu NIE wypisujemy na ekran - tylko info
         clip::copy_to_clipboard(&value).map_err(VaultError::InvalidStructure)?;
         println!(
@@ -206,17 +210,24 @@ pub fn get(path: &Path, id_or_name: &str, field: Option<&str>, clip: bool) -> Re
     }
 
     match field {
-        Some(name) => match view::field_value(record, name) {
-            Some(val) => println!("{val}"),
-            None => {
-                return Err(VaultError::InvalidStructure(format!(
-                    "rekord nie ma pola: {name}"
-                )))
-            }
-        },
+        Some(name) => println!("{}", field_or_err(record, name)?),
         None => println!("{}", view::format_detail(record)),
     }
     Ok(())
+}
+
+// znajdz rekord po id/nazwie albo zwroc kontrolowany blad (F-04).
+// wydzielone z get() pod testy gałęzi "nie znaleziono".
+fn find_record<'a>(records: &'a [Record], id_or_name: &str) -> Result<&'a Record> {
+    view::find(records, id_or_name)
+        .ok_or_else(|| VaultError::InvalidStructure(format!("nie znaleziono: {id_or_name}")))
+}
+
+// surowa wartosc pola albo kontrolowany blad gdy pola nie ma (F-04).
+// wydzielone z get() pod testy gałęzi "brak pola".
+fn field_or_err(record: &Record, name: &str) -> Result<String> {
+    view::field_value(record, name)
+        .ok_or_else(|| VaultError::InvalidStructure(format!("rekord nie ma pola: {name}")))
 }
 
 // vault changepass <plik> - zmienia haslo glowne BEZ zmiany DEK (SPEC §18).
@@ -731,6 +742,36 @@ mod tests {
         assert!(verify_structure(&bytes).is_ok());
     }
 
+    #[test]
+    fn init_refuses_to_overwrite_existing_file() {
+        // init nie nadpisuje istniejacego pliku (early-return przed promptem)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("istnieje.vlt");
+        std::fs::write(&path, b"cokolwiek").unwrap();
+        assert!(matches!(init(&path), Err(VaultError::InvalidStructure(_))));
+    }
+
+    // ── verify bez hasla (§12) - pelna funkcja, bez promptu ────────────────────
+
+    #[test]
+    fn verify_no_password_accepts_valid_file() {
+        let (_dir, path) = write_temp(&build_encrypted_vault());
+        assert!(verify(&path, false).is_ok());
+    }
+
+    #[test]
+    fn verify_no_password_rejects_garbage() {
+        let (_dir, path) = write_temp(b"nie vault");
+        assert!(verify(&path, false).is_err());
+    }
+
+    #[test]
+    fn verify_no_password_rejects_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nie_ma.vlt");
+        assert!(verify(&path, false).is_err());
+    }
+
     // ── changepass (§18): nowe haslo otwiera, stare juz nie ────────────────────
 
     const NEW_PASSWORD: &str = "nowe haslo glowne super dlugie";
@@ -782,14 +823,8 @@ mod tests {
 
     // ── zapis po modyfikacji (§17) + add (F-05) ───────────────────────────────
 
-    #[test]
-    fn save_adds_record_and_reopens() {
-        // sesja: otwórz, dopisz rekord, zapisz (§17), otwórz ponownie -> 2 rekordy
-        let (_dir, path) = write_temp(&build_encrypted_vault());
-        let (header, dek, mut body) = decrypt_vault_body(&path, TEST_PASSWORD).unwrap();
-        assert_eq!(body.records.len(), 1);
-
-        body.records.push(VaultRecord {
+    fn gitlab_record() -> VaultRecord {
+        VaultRecord {
             id: [2u8; 16],
             record_type: "login".to_string(),
             title: "gitlab".to_string(),
@@ -802,12 +837,35 @@ mod tests {
                 username: "u2".to_string(),
                 password: "p2".to_string(),
             },
-        });
+        }
+    }
+
+    #[test]
+    fn save_adds_record_and_reopens() {
+        // sesja: otwórz, dopisz rekord, zapisz (§17), otwórz ponownie -> 2 rekordy
+        let (_dir, path) = write_temp(&build_encrypted_vault());
+        let (header, dek, mut body) = decrypt_vault_body(&path, TEST_PASSWORD).unwrap();
+        assert_eq!(body.records.len(), 1);
+
+        body.records.push(gitlab_record());
         save_vault_with_nonce(&path, &header, &dek, &body, [77u8; NONCE_BODY_LEN]).unwrap();
 
         let records = decrypt_vault(&path, TEST_PASSWORD).unwrap();
         assert_eq!(records.len(), 2);
         assert!(records.iter().any(|r| r.title == "github"));
+        assert!(records.iter().any(|r| r.title == "gitlab"));
+    }
+
+    #[test]
+    fn save_vault_random_nonce_persists() {
+        // pokrywa save_vault (wariant z losowym nonce_body), tak jak uzywa go add_login
+        let (_dir, path) = write_temp(&build_encrypted_vault());
+        let (header, dek, mut body) = decrypt_vault_body(&path, TEST_PASSWORD).unwrap();
+        body.records.push(gitlab_record());
+        save_vault(&path, &header, &dek, &body).unwrap();
+
+        let records = decrypt_vault(&path, TEST_PASSWORD).unwrap();
+        assert_eq!(records.len(), 2);
         assert!(records.iter().any(|r| r.title == "gitlab"));
     }
 
@@ -830,6 +888,8 @@ mod tests {
         assert_eq!(decrypt_vault(&path, TEST_PASSWORD).unwrap().len(), 1);
     }
 
+    // ── mapowanie rekordow w obie strony ──────────────────────────────────────
+
     #[test]
     fn record_maps_to_format_and_back() {
         // Record (model aplikacji) -> VaultRecord (format) -> Record, pola zachowane
@@ -849,5 +909,80 @@ mod tests {
         assert_eq!(back.title, "x");
         assert_eq!(view::field_value(&back, "username").as_deref(), Some("usr"));
         assert_eq!(view::field_value(&back, "password").as_deref(), Some("pw"));
+    }
+
+    #[test]
+    fn record_from_vault_rejects_extension_type() {
+        // typy spoza MVP (note/apikey/...) -> kontrolowany blad strukturalny (§3.3)
+        let vr = VaultRecord {
+            id: [0u8; 16],
+            record_type: "note".to_string(),
+            title: "x".to_string(),
+            tags: vec![],
+            notes: String::new(),
+            created_at: 0,
+            modified_at: 0,
+            fields: RecordFields::Note {
+                content: "tresc".to_string(),
+            },
+        };
+        assert!(matches!(
+            record_from_vault(&vr),
+            Err(VaultError::InvalidStructure(_))
+        ));
+    }
+
+    // ── list / get: testowalne rdzenie (bez promptu i schowka) ────────────────
+
+    fn sample_records() -> Vec<Record> {
+        // budujemy rekord wprost (bez krypto) - list/get operuja na &[Record]
+        let inp = LoginInput {
+            title: "github".to_string(),
+            url: "https://github.com".to_string(),
+            username: "czarny".to_string(),
+            password: "tajne123".to_string(),
+            tags: vec!["praca".to_string()],
+            notes: String::new(),
+        };
+        vec![Record::new_login(inp, [1u8; 16], 1).unwrap()]
+    }
+
+    #[test]
+    fn list_output_filters_by_type() {
+        let recs = sample_records();
+        let out = list_output(&recs, Some("login"), None);
+        assert!(out.contains("github"));
+        // brak dopasowania -> komunikat o pustej liscie
+        let empty = list_output(&recs, Some("note"), None);
+        assert!(empty.contains("Brak"));
+    }
+
+    #[test]
+    fn list_output_filters_by_tag() {
+        let recs = sample_records();
+        assert!(list_output(&recs, None, Some("praca")).contains("github"));
+        assert!(list_output(&recs, None, Some("dom")).contains("Brak"));
+    }
+
+    #[test]
+    fn find_record_found_and_missing() {
+        let recs = sample_records();
+        assert!(find_record(&recs, "github").is_ok());
+        assert!(matches!(
+            find_record(&recs, "nie_ma_takiego"),
+            Err(VaultError::InvalidStructure(_))
+        ));
+    }
+
+    #[test]
+    fn field_or_err_reads_value_or_errors() {
+        let recs = sample_records();
+        let rec = find_record(&recs, "github").unwrap();
+        assert_eq!(field_or_err(rec, "username").unwrap(), "czarny");
+        assert_eq!(field_or_err(rec, "password").unwrap(), "tajne123");
+        assert!(matches!(
+            field_or_err(rec, "nieistnieje"),
+            Err(VaultError::InvalidStructure(_))
+        ));
     }
 }
