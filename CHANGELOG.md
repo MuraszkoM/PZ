@@ -2,9 +2,8 @@
 
 W tym pliku zapisujemy ważniejsze zmiany w projekcie.
 
-## [Unreleased]
+## Dodane
 
-### Dodane
 - Implementacja Crypto Core: Argon2id, HKDF-SHA256, HMAC-SHA256, ChaCha20-Poly1305, zeroizacja kluczy (src/crypto.rs)
 - Implementacja Format: parser i serializator nagłówka binarnego, CBOR body (src/format.rs)
 - Implementacja Storage: atomowy zapis pliku, advisory lock (src/storage.rs)
@@ -20,7 +19,5 @@ W tym pliku zapisujemy ważniejsze zmiany w projekcie.
 - Dokumentacja: SPEC.md, ARCHITECTURE.md, THREAT_MODEL.md, SECURITY.md
 - ADR-001 do ADR-007: decyzje technologiczne
 - Konfiguracja CI/CD (GitHub Actions)
-
-### W trakcie
-- Implementacja vault init i vault open (czeka na podłączenie Crypto Core do Vault Service)
-- Testy integracyjne E2E (czekają na implementację init/open)
+- Implementacja vault init i vault open
+- Testy integracyjne E2E
