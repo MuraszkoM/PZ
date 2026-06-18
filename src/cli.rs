@@ -73,7 +73,12 @@ pub enum AddKind {
 
 pub fn run() -> i32 {
     let cli = Cli::parse();
-    let result = dispatch(cli.command);
+    exit_code_for(dispatch(cli.command))
+}
+
+// mapuje wynik komendy na kod wyjscia procesu. wydzielone z run() zeby dalo sie
+// to przetestowac bez parsowania argv (Cli::parse czyta argumenty OS).
+fn exit_code_for(result: Result<(), VaultError>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
@@ -280,5 +285,23 @@ mod tests {
         let path = dir.path().join("exists.vlt");
         std::fs::write(&path, b"x").unwrap();
         assert!(dispatch(Command::Init { path }).is_err());
+    }
+
+    // ── exit_code_for: mapowanie wyniku komendy na kod wyjscia ─────────────────
+    // sama logika kodow wyjscia, bez parsowania argv (to robi Cli::parse w run()).
+
+    #[test]
+    fn exit_code_ok_is_zero() {
+        assert_eq!(exit_code_for(Ok(())), 0);
+    }
+
+    #[test]
+    fn exit_code_maps_error_variants() {
+        assert_eq!(exit_code_for(Err(VaultError::BadPasswordOrCorrupted)), 2);
+        assert_eq!(
+            exit_code_for(Err(VaultError::InvalidStructure("x".to_string()))),
+            3
+        );
+        assert_eq!(exit_code_for(Err(VaultError::NotImplemented("x"))), 64);
     }
 }
