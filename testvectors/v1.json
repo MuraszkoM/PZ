@@ -2,6 +2,7 @@
   "version": 1,
   "description": "Deterministyczne wektory testowe dla formatu vault v1. Każda implementacja musi odtworzyć te wartości bit-w-bit.",
   "context_string": "vault-v1",
+
   "kdf": {
     "algorithm": "Argon2id",
     "password": "correct horse battery staple",
@@ -10,8 +11,20 @@
     "iterations": 3,
     "parallelism": 1,
     "output_len": 32,
-    "note": "master_key_hex zostanie uzupełniony po zaakceptowaniu SPEC.md przez prowadzącego"
+    "master_key_hex": "37ac0130996216f2365ea8f2486ef87d6b19bdc4b51f9d61867837aac92ace18"
   },
+
+  "derived_keys": {
+    "wrap_key_hex":       "2c594224542d787a54b4c54da6b75750d0cf8dc8b63bdfefed8b177e996719a4",
+    "header_mac_key_hex": "26f67fe8e88e90170b63f9f303d072bcac9d34681c315759023f4132ea30e889",
+    "note": "HKDF-SHA256(ikm=master_key, salt=zeros(32), info=CONTEXT||label). wrap_key info='vault-v1wrap-dek-key', header_mac_key info='vault-v1header-mac'"
+  },
+
+  "dek": {
+    "dek_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+    "note": "Deterministyczny DEK dla wektorów testowych — w produkcji losowany z OS CSPRNG przy vault init"
+  },
+
   "header": {
     "magic": "VLT1",
     "version": "0x0001",
@@ -25,10 +38,14 @@
     "aead_id": 1,
     "nonce_dek_hex": "000000000000000000000001",
     "wrapped_dek_len": 48,
+    "wrapped_dek_hex": "c67c8538893d2d6bcf5b5c34fd22523d7119ba9e6ac930e60a4f3ee9d186db75c9da35a5e81ccf577002e6a05750928e",
     "canonical_header_len": 100,
+    "header_mac_hex": "1eb7ab55d2df1d5e96420863af74e4452f8765dc70ee18bc2feedb3d0ae53dea",
     "full_header_len": 132,
-    "note": "wrapped_dek_hex i header_mac_hex zostaną uzupełnione po implementacji Crypto Core"
+    "nonce_body_hex": "000000000000000000000002",
+    "note_aad_wrap_dek": "AAD dla wrap_dek = 'vault-v1wrap-dek'"
   },
+
   "body": {
     "schema_version": 1,
     "records": [
@@ -46,29 +63,34 @@
           "password": "correct horse battery staple"
         }
       }
-    ]
+    ],
+    "body_cbor_hex": "a26e736368656d615f76657273696f6e01677265636f72647381a8626964506ba7b8109dad11d180b400c04fd430c86474797065656c6f67696e657469746c657250727a796bc58261646f7779206c6f67696e6474616773816474657374656e6f746573606a637265617465645f61741b17979cfe362a00006b6d6f6469666965645f61741b17979cfe71c4ca00666669656c6473a36375726c7368747470733a2f2f6578616d706c652e636f6d68757365726e616d657075736572406578616d706c652e636f6d6870617373776f7264781c636f727265637420686f727365206261747465727920737461706c65"
   },
+
   "file_structure": {
     "offsets": {
-      "magic": "0-3",
-      "version": "4-5",
-      "flags": "6-7",
-      "kdf_id": "8",
+      "magic":          "0-3",
+      "version":        "4-5",
+      "flags":          "6-7",
+      "kdf_id":         "8",
       "kdf_memory_kib": "9-12",
       "kdf_iterations": "13-16",
-      "kdf_parallelism": "17",
-      "kdf_salt_len": "18",
-      "kdf_salt": "19-34",
-      "aead_id": "35",
-      "nonce_dek": "36-47",
-      "wrapped_dek_len": "48-51",
-      "wrapped_dek": "52-99",
-      "header_mac": "100-131",
-      "nonce_body": "132-143",
-      "ct_body": "144+"
+      "kdf_parallelism":"17",
+      "kdf_salt_len":   "18",
+      "kdf_salt":       "19-34",
+      "aead_id":        "35",
+      "nonce_dek":      "36-47",
+      "wrapped_dek_len":"48-51",
+      "wrapped_dek":    "52-99",
+      "header_mac":     "100-131",
+      "nonce_body":     "132-143",
+      "ct_body":        "144+"
     },
-    "note": "Wszystkie liczby wielobajtowe w big-endian. expected_file_base64 zostanie uzupełniony po integracji Crypto Core z Format."
+    "note": "Wszystkie liczby wielobajtowe w big-endian.",
+    "expected_file_base64": "VkxUMQABAAABAAEAAAAAAAMBEAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABAAAAMMZ8hTiJPS1rz1tcNP0iUj1xGbqeaskw5gpPPunRhtt1ydo1pegcz1dwAuagV1CSjh63q1XS3x1elkIIY6905EUvh2XccO4YvC/u2z0K5T3qAAAAAAAAAAAAAAACaIfMbhh63uFFurGGZG6mmwh8oL8nUsEdbzKb6W13wNkitelN0SMj2zlixothZwZdcvlAnUU55L3orhUfjlvE4TXTMjkz11ceRnAIOoLwhfm5CoBgUqE8Ipt4+l00oIpPs/vy6N29izIndr8yvtY6OmkCTx7dboW8b1GUNlNkJnbo2S5tltTdE0LQE3RJam98bQwuEdjg06h7Z9/zuhhSi7GOQ7dkH4vME9tGkgxT/Pfi+jZFJYRrD6tvNmiMuMebC40BriQ1qo9DEw1HI5LM4ZO1woOPPne4B0w9juOGeqF23e7pXxyXXNXN6epf2SWeU65FBLonHzAE7NoWJx8L",
+    "expected_file_total_bytes": 399
   },
+
   "adversarial_cases": [
     {
       "id": "A1",
@@ -101,5 +123,16 @@
       "expected": "ERR (FileTooShort lub InvalidMagic) — kontrolowany błąd, nie crash"
     }
   ],
-  "status": "draft — wymaga uzupełnienia po integracji Crypto Core (M4)"
+
+  "verification_steps": [
+    "1. Oblicz master_key = Argon2id(password, salt, m=65536, t=3, p=1) → porównaj z master_key_hex",
+    "2. Oblicz wrap_key = HKDF-SHA256(master_key, info='vault-v1wrap-dek-key') → porównaj z wrap_key_hex",
+    "3. Oblicz header_mac_key = HKDF-SHA256(master_key, info='vault-v1header-mac') → porównaj z header_mac_key_hex",
+    "4. Zbuduj canonical_header (100 bajtów) wg SPEC §5",
+    "5. Oblicz header_mac = HMAC-SHA256(header_mac_key, canonical_header) → porównaj z header_mac_hex",
+    "6. Zdekoduj expected_file_base64, sprawdź że plik ma 399 bajtów",
+    "7. Zdekoduj body: unwrap DEK używając wrap_key i nonce_dek, odszyfruj ct_body używając DEK i nonce_body"
+  ],
+
+  "status": "complete — wszystkie wartości uzupełnione, wygenerowane deterministycznie"
 }
