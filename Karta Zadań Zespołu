@@ -13,7 +13,11 @@ Kanał komunikacji: Discord
 
 Decyzje techniczne (uzasadnione w ADR): 
 ADR-001 Wybór języka: Rust 
-ADR-002 Format wewnętrzny body: 
-ADR-003 Algorytm AEAD: 
+ADR-002 Format wewnętrzny body: CBOR
+ADR-003 Algorytm AEAD: ChaCha20-Poly1305
+ADR-004 Parametry Argon2id: memory: 65536 KiB, iterations: 3, parallelism: 1, salt length: 16 B, output length: 32 B
+ADR-005 Obsługa błędów kryptograficznych: ERR_BAD_PASSWORD_OR_CORRUPTED
+ADR-006 Wczytywanie sekretow bez echa: rpassword
+ADR-007 Kopiowanie do schowka: arboard
 
 Pierwszy demonstracyjny commit do main: 26.05.2026
