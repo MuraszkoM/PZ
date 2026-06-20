@@ -43,6 +43,11 @@ pub enum FormatError {
     InvalidFieldType(String),
     /// Nieznany typ rekordu (w v1 to błąd)
     UnknownRecordType(String),
+    /// CBOR deklaruje długość/liczność większą niż faktycznie mieści się
+    /// w danych (ochrona przed nadmierną alokacją pamięci, CWE-789)
+    CborStructureTooLarge(String),
+    /// CBOR jest zagnieżdżone głębiej niż dozwolony limit
+    CborTooDeeplyNested,
 }
 
 // Implementacja Display pozwala wypisać błąd jako ładny tekst dla użytkownika
@@ -71,6 +76,12 @@ impl std::fmt::Display for FormatError {
             }
             FormatError::UnknownRecordType(t) => {
                 write!(f, "Nieznany typ rekordu w v1: {t}")
+            }
+            FormatError::CborStructureTooLarge(why) => {
+                write!(f, "Struktura CBOR przekracza limit rozmiaru: {why}")
+            }
+            FormatError::CborTooDeeplyNested => {
+                write!(f, "Struktura CBOR jest zagnieżdżona głębiej niż dozwolony limit")
             }
         }
     }
@@ -593,9 +604,268 @@ fn serialize_fields(fields: &RecordFields) -> Result<CborValue, FormatError> {
 
 // ─── Parsowanie body z CBOR ───────────────────────────────────────────────────
 
+// ─── Ochrona przed OOM/przepełnieniem stosu w CBOR (CWE-789) ──────────────────
+//
+// ciborium::de::from_reader, deserializując bezpośrednio do ciborium::Value,
+// dla bajtów/tekstu/tablic/map alokuje pamięć na podstawie deklarowanej w
+// nagłówku CBOR długości/liczności — ZANIM sprawdzi, czy w buforze faktycznie
+// jest tyle danych. Plik liczący kilkaset bajtów może więc zadeklarować np.
+// "ten napis ma 7*10^18 bajtów" i wywołać próbę zaalokowania gigabajtów pamięci
+// (znalezione fuzzingiem 24h na body_parser, M8 — patrz tests/regressions.rs).
+//
+// Dlatego, zanim oddamy dane do ciborium, sami — bez żadnej alokacji, tylko
+// przesuwając kursor po bajtach — sprawdzamy że żadna deklarowana
+// długość/liczność nie przekracza tego, co faktycznie mieści się w
+// pozostałych bajtach wejścia (każda wartość CBOR to co najmniej 1 bajt,
+// każda para klucz-wartość w mapie to co najmniej 2 bajty), oraz że
+// zagnieżdżenie nie przekracza rozsądnego limitu (ochrona przed
+// przepełnieniem stosu).
+
+/// Maksymalny rozmiar body (po deszyfrowaniu AEAD), który w ogóle próbujemy
+/// sparsować jako CBOR. Hojny dla realnego vaulta (tysiące rekordów), ale
+/// skończony — dodatkowa warstwa obrony obok poniższej walidacji struktury.
+pub const MAX_BODY_CBOR_LEN: usize = 64 * 1024 * 1024; // 64 MiB
+
+/// Maksymalna głębokość zagnieżdżenia struktur CBOR (tablice/mapy/tagi/stringi
+/// niedefinitywne). Realny rekord ma głębokość rzędu kilku poziomów (root ->
+/// records -> record -> fields), więc 64 to bardzo hojny, wciąż skończony limit.
+const MAX_CBOR_DEPTH: usize = 64;
+
+/// Odczytuje "argument" nagłówka CBOR (długość/liczbę/wartość) zaczynając od
+/// `pos`. Zwraca (Some(wartość), nowa_pozycja) dla długości definitywnej, albo
+/// (None, nowa_pozycja) gdy additional info == 31 (długość niedefinitywna —
+/// dozwolona tylko dla bajtów/tekstu/tablic/map).
+fn read_cbor_arg(data: &[u8], pos: usize) -> Result<(Option<u64>, usize), FormatError> {
+    if pos >= data.len() {
+        return Err(FormatError::CborError(
+            "nieoczekiwany koniec danych CBOR".to_string(),
+        ));
+    }
+    let info = data[pos] & 0x1F;
+    let header_end = pos + 1;
+    match info {
+        0..=23 => Ok((Some(info as u64), header_end)),
+        24 => {
+            let end = header_end + 1;
+            if end > data.len() {
+                return Err(FormatError::CborError("ucięty nagłówek CBOR".to_string()));
+            }
+            Ok((Some(data[header_end] as u64), end))
+        }
+        25 => {
+            let end = header_end + 2;
+            if end > data.len() {
+                return Err(FormatError::CborError("ucięty nagłówek CBOR".to_string()));
+            }
+            let v = u16::from_be_bytes(data[header_end..end].try_into().unwrap());
+            Ok((Some(v as u64), end))
+        }
+        26 => {
+            let end = header_end + 4;
+            if end > data.len() {
+                return Err(FormatError::CborError("ucięty nagłówek CBOR".to_string()));
+            }
+            let v = u32::from_be_bytes(data[header_end..end].try_into().unwrap());
+            Ok((Some(v as u64), end))
+        }
+        27 => {
+            let end = header_end + 8;
+            if end > data.len() {
+                return Err(FormatError::CborError("ucięty nagłówek CBOR".to_string()));
+            }
+            let v = u64::from_be_bytes(data[header_end..end].try_into().unwrap());
+            Ok((Some(v), end))
+        }
+        28..=30 => Err(FormatError::CborError(
+            "nieprawidłowy nagłówek CBOR (zarezerwowany additional info)".to_string(),
+        )),
+        _ => Ok((None, header_end)), // 31 — długość niedefinitywna
+    }
+}
+
+/// Sprawdza, że pojedyncza wartość CBOR zaczynająca się w `pos` jest
+/// strukturalnie spójna z `data`: żadna deklarowana długość/liczność nie
+/// przekracza tego, co faktycznie mieści się w pozostałych bajtach, a
+/// zagnieżdżenie nie przekracza MAX_CBOR_DEPTH. Nie alokuje — tylko przesuwa
+/// kursor po bajtach. Zwraca pozycję zaraz za sparsowaną wartością.
+fn check_cbor_value(data: &[u8], pos: usize, depth: usize) -> Result<usize, FormatError> {
+    if depth > MAX_CBOR_DEPTH {
+        return Err(FormatError::CborTooDeeplyNested);
+    }
+    if pos >= data.len() {
+        return Err(FormatError::CborError(
+            "nieoczekiwany koniec danych CBOR".to_string(),
+        ));
+    }
+
+    let major = data[pos] >> 5;
+
+    match major {
+        // 0: unsigned int, 1: negative int — tylko nagłówek + ewentualne bajty argumentu
+        0 | 1 => {
+            let (_, end) = read_cbor_arg(data, pos)?;
+            Ok(end)
+        }
+        // 2: byte string, 3: text string
+        2 | 3 => {
+            let (len_opt, header_end) = read_cbor_arg(data, pos)?;
+            match len_opt {
+                Some(len) => {
+                    let remaining = (data.len() - header_end) as u64;
+                    if len > remaining {
+                        return Err(FormatError::CborStructureTooLarge(format!(
+                            "string/bytes deklaruje {len} bajtów, dostępne tylko {remaining}"
+                        )));
+                    }
+                    Ok(header_end + len as usize)
+                }
+                None => {
+                    // Niedefinitywna długość: ciąg kawałków zakończony bajtem 0xFF.
+                    let mut cur = header_end;
+                    loop {
+                        if cur >= data.len() {
+                            return Err(FormatError::CborError(
+                                "nieoczekiwany koniec danych CBOR (niedefinitywny string)"
+                                    .to_string(),
+                            ));
+                        }
+                        if data[cur] == 0xFF {
+                            cur += 1;
+                            break;
+                        }
+                        cur = check_cbor_value(data, cur, depth + 1)?;
+                    }
+                    Ok(cur)
+                }
+            }
+        }
+        // 4: tablica
+        4 => {
+            let (len_opt, header_end) = read_cbor_arg(data, pos)?;
+            match len_opt {
+                Some(len) => {
+                    let remaining = (data.len() - header_end) as u64;
+                    // każdy element CBOR to co najmniej 1 bajt
+                    if len > remaining {
+                        return Err(FormatError::CborStructureTooLarge(format!(
+                            "tablica deklaruje {len} elementów, dostępne tylko {remaining} bajtów"
+                        )));
+                    }
+                    let mut cur = header_end;
+                    for _ in 0..len {
+                        cur = check_cbor_value(data, cur, depth + 1)?;
+                    }
+                    Ok(cur)
+                }
+                None => {
+                    let mut cur = header_end;
+                    loop {
+                        if cur >= data.len() {
+                            return Err(FormatError::CborError(
+                                "nieoczekiwany koniec danych CBOR (niedefinitywna tablica)"
+                                    .to_string(),
+                            ));
+                        }
+                        if data[cur] == 0xFF {
+                            cur += 1;
+                            break;
+                        }
+                        cur = check_cbor_value(data, cur, depth + 1)?;
+                    }
+                    Ok(cur)
+                }
+            }
+        }
+        // 5: mapa — N par klucz-wartość, każda para to co najmniej 2 bajty
+        5 => {
+            let (len_opt, header_end) = read_cbor_arg(data, pos)?;
+            match len_opt {
+                Some(len) => {
+                    let remaining = (data.len() - header_end) as u64;
+                    let min_bytes = len.saturating_mul(2);
+                    if min_bytes > remaining {
+                        return Err(FormatError::CborStructureTooLarge(format!(
+                            "mapa deklaruje {len} par, dostępne tylko {remaining} bajtów"
+                        )));
+                    }
+                    let mut cur = header_end;
+                    for _ in 0..len {
+                        cur = check_cbor_value(data, cur, depth + 1)?; // klucz
+                        cur = check_cbor_value(data, cur, depth + 1)?; // wartość
+                    }
+                    Ok(cur)
+                }
+                None => {
+                    let mut cur = header_end;
+                    loop {
+                        if cur >= data.len() {
+                            return Err(FormatError::CborError(
+                                "nieoczekiwany koniec danych CBOR (niedefinitywna mapa)"
+                                    .to_string(),
+                            ));
+                        }
+                        if data[cur] == 0xFF {
+                            cur += 1;
+                            break;
+                        }
+                        cur = check_cbor_value(data, cur, depth + 1)?; // klucz
+                        cur = check_cbor_value(data, cur, depth + 1)?; // wartość
+                    }
+                    Ok(cur)
+                }
+            }
+        }
+        // 6: tag — nagłówek z numerem tagu + dokładnie jedna zagnieżdżona wartość
+        6 => {
+            let (_, header_end) = read_cbor_arg(data, pos)?;
+            check_cbor_value(data, header_end, depth + 1)
+        }
+        // 7: liczby zmiennoprzecinkowe / wartości proste / break
+        _ => {
+            let info = data[pos] & 0x1F;
+            let end = match info {
+                0..=23 => pos + 1, // simple values / false / true / null / undefined
+                24 => pos + 2,     // simple(uint8)
+                25 => pos + 3,     // half float
+                26 => pos + 5,     // single float
+                27 => pos + 9,     // double float
+                28..=30 => {
+                    return Err(FormatError::CborError(
+                        "nieprawidłowy nagłówek CBOR (major 7, zarezerwowany)".to_string(),
+                    ))
+                }
+                _ => pos + 1, // 31 — break (obsługiwany przez wołającego w pętlach wyżej)
+            };
+            if end > data.len() {
+                return Err(FormatError::CborError("ucięta wartość CBOR".to_string()));
+            }
+            Ok(end)
+        }
+    }
+}
+
+/// Sprawdza całe `data` jako jedną wartość CBOR najwyższego poziomu, zanim
+/// odda się je do ciborium. Pre-walidacja bez alokacji — patrz komentarz nad
+/// stałymi MAX_BODY_CBOR_LEN / MAX_CBOR_DEPTH powyżej.
+fn check_cbor_budget(data: &[u8]) -> Result<(), FormatError> {
+    if data.len() > MAX_BODY_CBOR_LEN {
+        return Err(FormatError::CborStructureTooLarge(format!(
+            "body ma {} bajtów, limit to {MAX_BODY_CBOR_LEN}",
+            data.len()
+        )));
+    }
+    check_cbor_value(data, 0, 0)?;
+    Ok(())
+}
+
 /// Parsuje CBOR body do VaultBody.
 /// `data` — bajty po deszyfrowaniu AEAD.
 pub fn parse_body(data: &[u8]) -> Result<VaultBody, FormatError> {
+    // Pre-walidacja struktury CBOR bez alokacji — chroni przed OOM (CWE-789)
+    // i przepełnieniem stosu, zanim oddamy dane do ciborium (M8, znalezione
+    // fuzzingiem 24h na body_parser — patrz tests/regressions.rs).
+    check_cbor_budget(data)?;
+
     // Parsuj CBOR z bajtów
     let value: CborValue = ciborium::de::from_reader(Cursor::new(data))
         .map_err(|e| FormatError::CborError(e.to_string()))?;
@@ -1084,6 +1354,58 @@ mod tests {
     fn parse_body_rejects_garbage() {
         let garbage = b"to nie jest CBOR!!!";
         let result = parse_body(garbage);
-        assert!(matches!(result, Err(FormatError::CborError(_))));
+        assert!(matches!(
+            result,
+            Err(FormatError::CborError(_)) | Err(FormatError::CborStructureTooLarge(_))
+        ));
+    }
+
+    // ── Ochrona przed OOM w CBOR (M8, znalezione fuzzingiem 24h na body_parser) ─
+
+    #[test]
+    fn parse_body_rejects_oversized_body() {
+        let huge = vec![0u8; MAX_BODY_CBOR_LEN + 1];
+        let result = parse_body(&huge);
+        assert!(matches!(result, Err(FormatError::CborStructureTooLarge(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_text_string_claiming_more_than_available() {
+        // major type 3 (text string), info 27 -> dlugosc jako kolejne 8 bajtow.
+        // Deklarujemy ze string ma 2^62 bajtow, choc realnie nie ma zadnych.
+        let mut malicious = vec![0x7Bu8];
+        malicious.extend_from_slice(&(1u64 << 62).to_be_bytes());
+        let result = parse_body(&malicious);
+        assert!(matches!(result, Err(FormatError::CborStructureTooLarge(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_array_claiming_more_elements_than_bytes() {
+        // major type 4 (array), info 27 -> liczba elementow jako 8 bajtow.
+        // Deklarujemy tablice miliarda elementow w pliku o kilku bajtach.
+        let mut malicious = vec![0x9Bu8];
+        malicious.extend_from_slice(&1_000_000_000u64.to_be_bytes());
+        let result = parse_body(&malicious);
+        assert!(matches!(result, Err(FormatError::CborStructureTooLarge(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_too_deep_nesting() {
+        // 100 zagniezdzonych jednoelementowych tablic (major type 4, 1 element: 0x81)
+        // przekracza MAX_CBOR_DEPTH i powinno zostac odrzucone zanim cokolwiek
+        // alokujemy, zamiast przepelnic stos.
+        let mut malicious = vec![0x81u8; 100];
+        malicious.push(0x00); // najglebszy element: liczba calkowita 0
+        let result = parse_body(&malicious);
+        assert!(matches!(result, Err(FormatError::CborTooDeeplyNested)));
+    }
+
+    #[test]
+    fn parse_body_still_accepts_legitimate_body_after_budget_check() {
+        // upewnij sie ze nowa pre-walidacja nie psuje normalnego, poprawnego body
+        let original = make_test_body();
+        let cbor_bytes = serialize_body(&original).expect("serializacja");
+        let parsed = parse_body(&cbor_bytes).expect("parsowanie poprawnego body");
+        assert_eq!(parsed.records.len(), 1);
     }
 }
