@@ -81,7 +81,10 @@ impl std::fmt::Display for FormatError {
                 write!(f, "Struktura CBOR przekracza limit rozmiaru: {why}")
             }
             FormatError::CborTooDeeplyNested => {
-                write!(f, "Struktura CBOR jest zagnieżdżona głębiej niż dozwolony limit")
+                write!(
+                    f,
+                    "Struktura CBOR jest zagnieżdżona głębiej niż dozwolony limit"
+                )
             }
         }
     }
@@ -1407,5 +1410,170 @@ mod tests {
         let cbor_bytes = serialize_body(&original).expect("serializacja");
         let parsed = parse_body(&cbor_bytes).expect("parsowanie poprawnego body");
         assert_eq!(parsed.records.len(), 1);
+    }
+
+    // ── Dodatkowe pokrycie check_cbor_value / read_cbor_arg ─────────────────────
+    // (gałęzie CBOR nieużywane przez nasz własny serializer — niedefinitywne
+    // długości, tagi, liczby zmiennoprzecinkowe, wielobajtowe nagłówki długości —
+    // ale wciąż prawnie poprawne CBOR, więc parser musi je obsłużyć poprawnie)
+
+    #[test]
+    fn parse_body_accepts_indefinite_length_map() {
+        // {"a": 1} zakodowane jako mapa niedefinitywnej długości (0xBF...0xFF)
+        let data = [0xBFu8, 0x61, 0x61, 0x01, 0xFF];
+        let result = parse_body(&data);
+        // Strukturalnie poprawne, ale brak "schema_version" -> MissingField
+        assert!(matches!(result, Err(FormatError::MissingField(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_truncated_indefinite_map() {
+        // jak wyżej, ale bez zamykającego bajtu 0xFF
+        let data = [0xBFu8, 0x61, 0x61, 0x01];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::CborError(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_indefinite_length_array() {
+        // [1, 2] jako tablica niedefinitywnej długości (0x9F...0xFF)
+        let data = [0x9Fu8, 0x01, 0x02, 0xFF];
+        let result = parse_body(&data);
+        // Top-level to nie mapa -> InvalidFieldType("vault root")
+        assert!(matches!(result, Err(FormatError::InvalidFieldType(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_truncated_indefinite_array() {
+        let data = [0x9Fu8, 0x01, 0x02];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::CborError(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_indefinite_length_byte_string() {
+        // niedefinitywny byte string z jednym kawałkiem (0x41 0x61) + break
+        let data = [0x5Fu8, 0x41, 0x61, 0xFF];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::InvalidFieldType(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_indefinite_length_text_string() {
+        let data = [0x7Fu8, 0x61, 0x61, 0xFF];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::InvalidFieldType(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_cbor_tag() {
+        // tag(0) wokół liczby 1 — major type 6, dozwolony, ale top-level nie jest mapą
+        let data = [0xC0u8, 0x01];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::InvalidFieldType(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_oversized_string_wrapped_in_tag() {
+        // ten sam atak co parse_body_rejects_text_string_claiming_more_than_available,
+        // tylko opakowany w tag — sprawdza że błąd propaguje się przez major type 6
+        let mut malicious = vec![0xC0u8, 0x7B];
+        malicious.extend_from_slice(&(1u64 << 62).to_be_bytes());
+        let result = parse_body(&malicious);
+        assert!(matches!(result, Err(FormatError::CborStructureTooLarge(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_one_byte_length_header() {
+        // text string "ab" zakodowany z jawną 1-bajtową długością (info=24),
+        // zamiast skróconej formy inline (info<24) — niekanoniczne, ale poprawne CBOR
+        let data = [0x78u8, 0x02, 0x61, 0x62];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::InvalidFieldType(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_two_byte_length_header() {
+        // text string "ab" z 2-bajtową długością (info=25)
+        let data = [0x79u8, 0x00, 0x02, 0x61, 0x62];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::InvalidFieldType(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_four_byte_length_header() {
+        // text string "ab" z 4-bajtową długością (info=26)
+        let data = [0x7Au8, 0x00, 0x00, 0x00, 0x02, 0x61, 0x62];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::InvalidFieldType(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_truncated_four_byte_length_header() {
+        // info=26 zapowiada 4 bajty długości, ale są tylko 2 -> ucięty nagłówek
+        let data = [0x7Au8, 0x00, 0x00];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::CborError(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_reserved_additional_info() {
+        // additional info 28 jest zarezerwowane i niepoprawne w CBOR
+        let data = [0x7Cu8];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::CborError(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_null_simple_value() {
+        let data = [0xA1u8, 0x61, 0x61, 0xF6]; // {"a": null}
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::MissingField(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_boolean_simple_value() {
+        let data = [0xA1u8, 0x61, 0x61, 0xF4]; // {"a": false}
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::MissingField(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_half_float() {
+        let data = [0xA1u8, 0x61, 0x61, 0xF9, 0x3C, 0x00]; // {"a": 1.0 half}
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::MissingField(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_single_float() {
+        let data = [0xA1u8, 0x61, 0x61, 0xFA, 0x3F, 0x80, 0x00, 0x00]; // {"a": 1.0f32}
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::MissingField(_))));
+    }
+
+    #[test]
+    fn parse_body_accepts_double_float() {
+        let data = [
+            0xA1u8, 0x61, 0x61, 0xFB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]; // {"a": 0.0f64}
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::MissingField(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_reserved_major7_info() {
+        // major type 7, additional info 28 — zarezerwowane, niepoprawne
+        let data = [0xFCu8];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::CborError(_))));
+    }
+
+    #[test]
+    fn parse_body_rejects_truncated_half_float() {
+        // info=25 (half float) zapowiada 2 bajty, ale ich nie ma
+        let data = [0xF9u8];
+        let result = parse_body(&data);
+        assert!(matches!(result, Err(FormatError::CborError(_))));
     }
 }
